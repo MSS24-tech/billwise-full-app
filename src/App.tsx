@@ -1,5 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  dateLabel,
+  calculateSaleTotals,
+  emptyBusiness,
+  fmt,
+  id,
+  read,
+  today,
+} from "./domain";
+import type { Customer, Product, Sale, SaleLine, Tab } from "./domain";
+import {
+  Empty,
+  Field,
+  Metric,
+  Modal,
+  PageHead,
+  Quick,
+  Status,
+} from "./components/Ui";
+import { InvoiceView } from "./components/InvoiceView";
+import { SaleForm } from "./components/SaleForm";
+import {
   LayoutDashboard,
   ReceiptText,
   Package,
@@ -33,201 +54,20 @@ import {
   Filter,
 } from "lucide-react";
 
-type Product = {
-  id: string;
-  name: string;
-  sku: string;
-  hsn: string;
-  unit: string;
-  cost: number;
-  price: number;
-  gst: number;
-  stock: number;
-  minStock: number;
-};
-type Customer = {
-  id: string;
-  name: string;
-  gstin: string;
-  phone: string;
-  email: string;
-  address: string;
-  state: string;
-};
-type SaleLine = {
-  productId: string;
-  name: string;
-  hsn: string;
-  qty: number;
-  rate: number;
-  gst: number;
-  cost: number;
-};
-type Sale = {
-  id: string;
-  number: string;
-  date: string;
-  due: string;
-  customerId: string;
-  customerName: string;
-  customerGstin: string;
-  place: string;
-  supply: "Intra-state" | "Inter-state";
-  lines: SaleLine[];
-  discount: number;
-  subtotal: number;
-  tax: number;
-  total: number;
-  paid: number;
-  status: "Paid" | "Part-paid" | "Unpaid";
-  notes: string;
-};
-type Tab =
-  | "Overview"
-  | "New sale"
-  | "Sales invoices"
-  | "Products"
-  | "Customers"
-  | "Inventory"
-  | "Reports"
-  | "Settings";
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(n);
-const id = () => Math.random().toString(36).slice(2, 10);
-const today = () => new Date().toISOString().slice(0, 10);
-const dateLabel = (d: string) =>
-  d
-    ? new Date(d + "T00:00:00").toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      })
-    : "—";
-const seedProducts: Product[] = [
-  {
-    id: "p1",
-    name: "Cotton T-Shirt",
-    sku: "APP-001",
-    hsn: "610910",
-    unit: "pcs",
-    cost: 180,
-    price: 399,
-    gst: 5,
-    stock: 85,
-    minStock: 15,
-  },
-  {
-    id: "p2",
-    name: "Denim Jeans",
-    sku: "APP-002",
-    hsn: "620342",
-    unit: "pcs",
-    cost: 650,
-    price: 1199,
-    gst: 12,
-    stock: 24,
-    minStock: 8,
-  },
-  {
-    id: "p3",
-    name: "Canvas Tote Bag",
-    sku: "ACC-001",
-    hsn: "420292",
-    unit: "pcs",
-    cost: 95,
-    price: 249,
-    gst: 18,
-    stock: 7,
-    minStock: 10,
-  },
-  {
-    id: "p4",
-    name: "Water Bottle",
-    sku: "HOM-001",
-    hsn: "392410",
-    unit: "pcs",
-    cost: 110,
-    price: 299,
-    gst: 18,
-    stock: 42,
-    minStock: 10,
-  },
-  {
-    id: "p5",
-    name: "Notebook A5",
-    sku: "STA-001",
-    hsn: "482010",
-    unit: "pcs",
-    cost: 35,
-    price: 89,
-    gst: 12,
-    stock: 4,
-    minStock: 12,
-  },
-];
-const seedCustomers: Customer[] = [
-  {
-    id: "c1",
-    name: "Acme Retail Pvt. Ltd.",
-    gstin: "29AAACA1234A1ZP",
-    phone: "+91 98765 43210",
-    email: "accounts@acme.example",
-    address: "Indiranagar, Bengaluru",
-    state: "Karnataka",
-  },
-  {
-    id: "c2",
-    name: "Priya Sharma",
-    gstin: "",
-    phone: "+91 99887 66554",
-    email: "priya@example.com",
-    address: "Jayanagar, Bengaluru",
-    state: "Karnataka",
-  },
-  {
-    id: "c3",
-    name: "Northstar Stores",
-    gstin: "27AABCN1234C1Z9",
-    phone: "+91 91234 56789",
-    email: "billing@northstar.example",
-    address: "Pune, Maharashtra",
-    state: "Maharashtra",
-  },
-];
-const read = <T,>(key: string, fallback: T): T => {
-  try {
-    const s = localStorage.getItem(key);
-    return s ? JSON.parse(s) : fallback;
-  } catch {
-    return fallback;
-  }
-};
 export default function App() {
   const [tab, setTab] = useState<Tab>("Overview"),
     [mobile, setMobile] = useState(false),
     [query, setQuery] = useState(""),
     [toast, setToast] = useState("");
   const [products, setProducts] = useState<Product[]>(() =>
-    read("bw-products", seedProducts),
+    read("bw-products", []),
   );
   const [customers, setCustomers] = useState<Customer[]>(() =>
-    read("bw-customers", seedCustomers),
+    read("bw-customers", []),
   );
   const [sales, setSales] = useState<Sale[]>(() => read("bw-sales", []));
   const [business, setBusiness] = useState(() =>
-    read("bw-business", {
-      name: "My Small Business",
-      gstin: "29ABCDE1234F1Z5",
-      phone: "+91 98765 43210",
-      email: "hello@mybusiness.example",
-      address: "Bengaluru, Karnataka",
-      state: "Karnataka",
-      prefix: "INV-26-27-",
-    }),
+    read("bw-business", emptyBusiness),
   );
   const [showProduct, setShowProduct] = useState(false),
     [showCustomer, setShowCustomer] = useState(false),
@@ -237,13 +77,10 @@ export default function App() {
   const [productForm, setProductForm] = useState<Partial<Product>>({
     name: "",
     sku: "",
+    barcode: "",
     hsn: "",
-    unit: "pcs",
-    cost: 0,
-    price: 0,
+    unit: "",
     gst: 18,
-    stock: 0,
-    minStock: 5,
   });
   const [customerForm, setCustomerForm] = useState<Partial<Customer>>({
     name: "",
@@ -251,20 +88,15 @@ export default function App() {
     phone: "",
     email: "",
     address: "",
-    state: "Karnataka",
+    state: "",
   });
-  const [adjustQty, setAdjustQty] = useState("1"),
-    [adjustNote, setAdjustNote] = useState("Stock received");
+  const [adjustQty, setAdjustQty] = useState("");
   const [saleCustomer, setSaleCustomer] = useState(""),
-    [saleDate, setSaleDate] = useState(today()),
-    [saleDue, setSaleDue] = useState(today()),
-    [saleSupply, setSaleSupply] = useState<"Intra-state" | "Inter-state">(
-      "Intra-state",
-    ),
-    [salePlace, setSalePlace] = useState("Karnataka"),
-    [saleDiscount, setSaleDiscount] = useState("0"),
-    [salePaid, setSalePaid] = useState("0"),
-    [saleNotes, setSaleNotes] = useState("Thank you for your business."),
+    [saleDate, setSaleDate] = useState(""),
+    [salePlace, setSalePlace] = useState(""),
+    [saleDiscount, setSaleDiscount] = useState(""),
+    [salePaid, setSalePaid] = useState(""),
+    [saleNotes, setSaleNotes] = useState(""),
     [saleLines, setSaleLines] = useState<{ productId: string; qty: number }[]>(
       [],
     );
@@ -296,7 +128,7 @@ export default function App() {
     ["Settings", Settings],
   ] as const;
   const productMatches = products.filter((p) =>
-    (p.name + " " + p.sku + " " + p.hsn)
+    (p.name + " " + p.sku + " " + p.barcode + " " + p.hsn)
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
@@ -311,6 +143,20 @@ export default function App() {
       .includes(query.toLowerCase()),
   );
   const currentCustomer = customers.find((c) => c.id === saleCustomer);
+  const productStockCount = products.reduce((sum, product) => sum + product.stock, 0);
+  const productRetailValue = products.reduce(
+    (sum, product) => sum + product.price * product.stock,
+    0,
+  );
+  const productLowStockCount = products.filter(
+    (product) => product.stock <= product.minStock,
+  ).length;
+  const saleSupply: Sale["supply"] =
+    business.state.trim() &&
+    salePlace.trim() &&
+    business.state.trim().toLowerCase() === salePlace.trim().toLowerCase()
+      ? "Intra-state"
+      : "Inter-state";
   const computed = useMemo(() => {
     const lines = saleLines
       .map((l) => {
@@ -329,35 +175,35 @@ export default function App() {
           : null;
       })
       .filter(Boolean) as (SaleLine & { amount: number })[];
-    const subtotal = lines.reduce((a, l) => a + l.amount, 0);
-    const discount = Math.min(100, Math.max(0, Number(saleDiscount) || 0));
-    const discounted = subtotal * (1 - discount / 100);
-    const tax = lines.reduce(
-      (a, l) => a + (l.amount * (1 - discount / 100) * l.gst) / 100,
-      0,
-    );
     return {
       lines,
-      subtotal,
-      discount,
-      discountAmount: (subtotal * discount) / 100,
-      tax,
-      total: discounted + tax,
+      ...calculateSaleTotals(
+        lines,
+        Number(saleDiscount) || 0,
+        saleSupply,
+      ),
     };
-  }, [saleLines, products, saleDiscount]);
+  }, [saleLines, products, saleDiscount, saleSupply]);
   const revenue = sales.reduce((a, s) => a + s.total, 0),
     received = sales.reduce((a, s) => a + s.paid, 0),
     outstanding = sales.reduce((a, s) => a + Math.max(0, s.total - s.paid), 0),
     lowStock = products.filter((p) => p.stock <= p.minStock);
+  const resetSaleForm = () => {
+    setSaleCustomer("");
+    setSaleDate("");
+    setSalePlace("");
+    setSaleDiscount("");
+    setSalePaid("");
+    setSaleNotes("");
+    setSaleLines([]);
+  };
   const startSale = () => {
     setSaleCustomer(customers[0]?.id || "");
     setSaleDate(today());
-    setSaleDue(today());
-    setSaleSupply("Intra-state");
-    setSalePlace(customers[0]?.state || "Karnataka");
-    setSaleDiscount("0");
-    setSalePaid("0");
-    setSaleNotes("Thank you for your business.");
+    setSalePlace(customers[0]?.state || "");
+    setSaleDiscount("");
+    setSalePaid("");
+    setSaleNotes("");
     setSaleLines(
       products.length ? [{ productId: products[0].id, qty: 1 }] : [],
     );
@@ -365,6 +211,14 @@ export default function App() {
     setShowSale(true);
   };
   const saveSale = () => {
+    if (!business.name.trim() || !business.state.trim()) {
+      notify("Enter your business name and state in Settings before creating an invoice.");
+      return;
+    }
+    if (!saleDate || !salePlace.trim()) {
+      notify("Enter the invoice date and place of supply.");
+      return;
+    }
     if (!saleCustomer || !computed.lines.length) {
       notify("Select a customer and add at least one item.");
       return;
@@ -383,7 +237,7 @@ export default function App() {
       id: id(),
       number,
       date: saleDate,
-      due: saleDue,
+      due: "",
       customerId: c.id,
       customerName: c.name,
       customerGstin: c.gstin,
@@ -391,8 +245,14 @@ export default function App() {
       supply: saleSupply,
       lines: computed.lines,
       discount: computed.discount,
+      discountAmount: computed.discountAmount,
       subtotal: computed.subtotal,
+      taxableSubtotal: computed.taxableSubtotal,
       tax: computed.tax,
+      cgst: computed.cgst,
+      sgst: computed.sgst,
+      igst: computed.igst,
+      roundingAdjustment: computed.roundingAdjustment,
       total: computed.total,
       paid,
       status:
@@ -406,6 +266,7 @@ export default function App() {
         return l ? { ...p, stock: p.stock - l.qty } : p;
       }),
     );
+    resetSaleForm();
     setShowSale(false);
     setTab("Sales invoices");
     setQuery("");
@@ -452,6 +313,17 @@ export default function App() {
     setViewSale(null);
     notify("Invoice deleted and stock restored.");
   };
+  const startAddProduct = () => {
+    setProductForm({
+      name: "",
+      sku: "",
+      barcode: "",
+      hsn: "",
+      unit: "",
+      gst: 18,
+    });
+    setShowProduct(true);
+  };
   const saveProduct = () => {
     if (!productForm.name?.trim() || !productForm.sku?.trim()) {
       notify("Product name and SKU are required.");
@@ -465,16 +337,33 @@ export default function App() {
       notify("SKU already exists. Use a unique SKU.");
       return;
     }
+    const barcode = productForm.barcode?.trim() || "";
+    if (
+      barcode &&
+      products.some(
+        (p) => p.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
+      )
+    ) {
+      notify("Barcode already exists. Use a unique barcode.");
+      return;
+    }
+    const gst = Number(productForm.gst ?? 0);
+    const price = Number(productForm.price ?? 0);
+    if (!Number.isFinite(gst) || gst < 0 || !Number.isFinite(price) || price < 0) {
+      notify("Enter a valid selling price and non-negative GST rate.");
+      return;
+    }
     setProducts((v) => [
       {
         id: id(),
         name: productForm.name!.trim(),
         sku: productForm.sku!.trim(),
+        barcode,
         hsn: productForm.hsn || "",
-        unit: productForm.unit || "pcs",
+        unit: productForm.unit || "",
         cost: Number(productForm.cost) || 0,
-        price: Number(productForm.price) || 0,
-        gst: Number(productForm.gst) || 0,
+        price,
+        gst,
         stock: Number(productForm.stock) || 0,
         minStock: Number(productForm.minStock) || 0,
       },
@@ -484,15 +373,43 @@ export default function App() {
     setProductForm({
       name: "",
       sku: "",
+      barcode: "",
       hsn: "",
-      unit: "pcs",
-      cost: 0,
-      price: 0,
+      unit: "",
       gst: 18,
-      stock: 0,
-      minStock: 5,
     });
     notify("Product added.");
+  };
+  const addProductToSale = (product: Product) => {
+    const currentQty =
+      saleLines.find((line) => line.productId === product.id)?.qty ?? 0;
+    if (currentQty >= product.stock) {
+      notify(`No more stock available for ${product.name}.`);
+      return;
+    }
+    setSaleLines((lines) => {
+      const existing = lines.find((line) => line.productId === product.id);
+      return existing
+        ? lines.map((line) =>
+            line.productId === product.id
+              ? { ...line, qty: line.qty + 1 }
+              : line,
+          )
+        : [...lines, { productId: product.id, qty: 1 }];
+    });
+    notify(`${product.name} added to sale.`);
+  };
+  const scanProductIntoSale = (scannedCode: string) => {
+    const code = scannedCode.trim().toLowerCase();
+    if (!code) return;
+    const product =
+      products.find((item) => item.barcode?.trim().toLowerCase() === code) ??
+      products.find((item) => item.sku.trim().toLowerCase() === code);
+    if (!product) {
+      notify(`No product found for barcode "${scannedCode.trim()}".`);
+      return;
+    }
+    addProductToSale(product);
   };
   const saveCustomer = () => {
     if (!customerForm.name?.trim()) {
@@ -507,7 +424,7 @@ export default function App() {
         phone: customerForm.phone || "",
         email: customerForm.email || "",
         address: customerForm.address || "",
-        state: customerForm.state || "Karnataka",
+        state: customerForm.state || "",
       },
       ...v,
     ]);
@@ -518,7 +435,7 @@ export default function App() {
       phone: "",
       email: "",
       address: "",
-      state: "Karnataka",
+      state: "",
     });
     notify("Customer added.");
   };
@@ -563,6 +480,7 @@ export default function App() {
             [
               "Name",
               "SKU",
+              "Barcode",
               "HSN/SAC",
               "Cost",
               "Selling price",
@@ -573,6 +491,7 @@ export default function App() {
             ...products.map((p) => [
               p.name,
               p.sku,
+              p.barcode || "",
               p.hsn,
               p.cost,
               p.price,
@@ -648,10 +567,16 @@ export default function App() {
   };
   const statusClass = (s: string) => s.toLowerCase().replace("-", "");
   const openTab = (t: Tab) => {
+    if (t === "New sale") {
+      startSale();
+      setQuery("");
+      setMobile(false);
+      return;
+    }
     setTab(t);
     setQuery("");
     setMobile(false);
-    if (t !== "New sale") setShowSale(false);
+    setShowSale(false);
   };
   return (
     <div className="shell">
@@ -895,21 +820,8 @@ export default function App() {
                 <Quick
                   icon={<Package />}
                   title="Add a product"
-                  text="Set prices, tax rates and reorder thresholds."
-                  onClick={() => {
-                    setProductForm({
-                      name: "",
-                      sku: "",
-                      hsn: "",
-                      unit: "pcs",
-                      cost: 0,
-                      price: 0,
-                      gst: 18,
-                      stock: 0,
-                      minStock: 5,
-                    });
-                    setShowProduct(true);
-                  }}
+                  text="Set prices, 18% default GST and stock levels."
+                  onClick={startAddProduct}
                 />
                 <Quick
                   icon={<Users />}
@@ -944,10 +856,7 @@ export default function App() {
                 setSaleCustomer={setSaleCustomer}
                 saleDate={saleDate}
                 setSaleDate={setSaleDate}
-                saleDue={saleDue}
-                setSaleDue={setSaleDue}
                 saleSupply={saleSupply}
-                setSaleSupply={setSaleSupply}
                 salePlace={salePlace}
                 setSalePlace={setSalePlace}
                 saleDiscount={saleDiscount}
@@ -960,6 +869,11 @@ export default function App() {
                 setSaleLines={setSaleLines}
                 computed={computed}
                 onAddLine={addLine}
+                onAddProductManually={(productId: string) => {
+                  const product = products.find((item) => item.id === productId);
+                  if (product) addProductToSale(product);
+                }}
+                onScanBarcode={scanProductIntoSale}
                 onSave={saveSale}
               />
             </>
@@ -1066,39 +980,58 @@ export default function App() {
             </>
           )}
           {tab === "Products" && (
-            <>
+            <div className="products-page">
               <PageHead
                 title="Products & services"
-                subtitle="Manage your catalogue, pricing, tax rates and stock."
+                subtitle="A clear view of your catalogue, GST rates, pricing and stock."
                 action={
                   <button
                     className="btn primary"
-                    onClick={() => {
-                      setProductForm({
-                        name: "",
-                        sku: "",
-                        hsn: "",
-                        unit: "pcs",
-                        cost: 0,
-                        price: 0,
-                        gst: 18,
-                        stock: 0,
-                        minStock: 5,
-                      });
-                      setShowProduct(true);
-                    }}
+                    onClick={startAddProduct}
                   >
                     <Plus size={16} /> Add product
                   </button>
                 }
               />
+              <section className="product-overview">
+                <div className="product-overview-copy">
+                  <span className="product-overview-kicker">PRODUCT CATALOGUE</span>
+                  <h2>Everything in one place.</h2>
+                  <p>
+                    New products default to 18% GST. Intra-state: 9% CGST + 9%
+                    SGST · Inter-state: 18% IGST.
+                  </p>
+                </div>
+                <div className="product-overview-stats">
+                  <div>
+                    <span>Products</span>
+                    <b>{products.length}</b>
+                  </div>
+                  <div>
+                    <span>Units in stock</span>
+                    <b>{productStockCount}</b>
+                  </div>
+                  <div>
+                    <span>Retail stock value</span>
+                    <b>{fmt(productRetailValue)}</b>
+                  </div>
+                  <div className={productLowStockCount ? "attention" : ""}>
+                    <span>Low stock</span>
+                    <b>{productLowStockCount}</b>
+                  </div>
+                </div>
+                <div className="product-gst-chip">
+                  <span>DEFAULT GST</span>
+                  <b>18%</b>
+                </div>
+              </section>
               <div className="toolbar">
                 <div className="searchbox">
                   <Search size={16} />
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search name, SKU or HSN..."
+                    placeholder="Search name, SKU, barcode or HSN..."
                   />
                 </div>
                 <button
@@ -1108,16 +1041,32 @@ export default function App() {
                   <Download size={15} /> Export CSV
                 </button>
               </div>
-              <div className="panel">
+              <div className="panel product-catalogue-panel">
+                <div className="product-list-heading">
+                  <div>
+                    <h2>Your products</h2>
+                    <p>
+                      {productMatches.length}{" "}
+                      {productMatches.length === 1 ? "item" : "items"}
+                      {query ? " matching your search" : " in your catalogue"}
+                    </p>
+                  </div>
+                  <span className="product-price-hint">
+                    Prices are before GST
+                  </span>
+                </div>
                 <div className="table-wrap">
-                  <table>
+                  <table
+                    className={`product-table${productMatches.length ? " has-products" : ""}`}
+                  >
                     <thead>
                       <tr>
                         <th>PRODUCT</th>
                         <th>SKU</th>
+                        <th>BARCODE</th>
                         <th>HSN/SAC</th>
                         <th>COST</th>
-                        <th>SELLING PRICE</th>
+                        <th>SELLING PRICE · BEFORE GST</th>
                         <th>GST</th>
                         <th>STOCK</th>
                         <th></th>
@@ -1131,14 +1080,30 @@ export default function App() {
                               <div className="product-symbol">
                                 <Package size={16} />
                               </div>
-                              <b>{p.name}</b>
+                              <div>
+                                <b>{p.name}</b>
+                                <small>{p.unit || "Product"}</small>
+                              </div>
                             </div>
                           </td>
                           <td>{p.sku}</td>
+                          <td>{p.barcode || "—"}</td>
                           <td>{p.hsn || "—"}</td>
                           <td>{fmt(p.cost)}</td>
-                          <td className="strong">{fmt(p.price)}</td>
-                          <td>{p.gst}%</td>
+                          <td className="strong">
+                            <div className="product-price-cell">
+                              <b>{fmt(p.price)}</b>
+                              <small>
+                                {fmt(p.price + (p.price * p.gst) / 100)} incl. GST
+                              </small>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="product-tax-badge">{p.gst}%</span>
+                            <small className="product-tax-split">
+                              CGST {p.gst / 2}% · SGST {p.gst / 2}%
+                            </small>
+                          </td>
                           <td>
                             <span
                               className={
@@ -1154,8 +1119,7 @@ export default function App() {
                                 title="Adjust stock"
                                 onClick={() => {
                                   setShowAdjust(p);
-                                  setAdjustQty("1");
-                                  setAdjustNote("Stock received");
+                                  setAdjustQty("");
                                 }}
                               >
                                 <RotateCcw size={15} />
@@ -1185,12 +1149,12 @@ export default function App() {
                       title="No products found"
                       text="Add a product to begin building your catalogue."
                       action="Add product"
-                      onAction={() => setShowProduct(true)}
+                      onAction={startAddProduct}
                     />
                   )}
                 </div>
               </div>
-            </>
+            </div>
           )}
           {tab === "Customers" && (
             <>
@@ -1291,8 +1255,7 @@ export default function App() {
                     className="btn primary"
                     onClick={() => {
                       setShowAdjust(products[0] || null);
-                      setAdjustQty("1");
-                      setAdjustNote("Stock received");
+                      setAdjustQty("");
                     }}
                   >
                     <Plus size={16} /> Adjust stock
@@ -1382,8 +1345,7 @@ export default function App() {
                               className="btn tiny light"
                               onClick={() => {
                                 setShowAdjust(p);
-                                setAdjustQty("1");
-                                setAdjustNote("Stock received");
+                                setAdjustQty("");
                               }}
                             >
                               Adjust
@@ -1591,24 +1553,12 @@ export default function App() {
                       />
                     </Field>
                     <Field label="State">
-                      <select
+                      <input
                         value={business.state}
                         onChange={(e) =>
                           setBusiness({ ...business, state: e.target.value })
                         }
-                      >
-                        {[
-                          "Karnataka",
-                          "Maharashtra",
-                          "Tamil Nadu",
-                          "Telangana",
-                          "Kerala",
-                          "Delhi",
-                          "Other state",
-                        ].map((s) => (
-                          <option key={s}>{s}</option>
-                        ))}
-                      </select>
+                      />
                     </Field>
                   </div>
                 </div>
@@ -1681,6 +1631,7 @@ export default function App() {
                           setProducts([]);
                           setCustomers([]);
                           setSales([]);
+                          setBusiness(emptyBusiness);
                           notify("Local data cleared.");
                         }
                       }}
@@ -1715,10 +1666,10 @@ export default function App() {
       {showProduct && (
         <Modal
           title="Add a product"
-          subtitle="Create a catalogue item for your sales invoices."
+          subtitle="New products use 18% GST by default. Selling price is entered before GST."
           onClose={() => setShowProduct(false)}
         >
-          <div className="form-grid two">
+          <div className="form-grid two product-entry-form">
             <Field label="Product name *">
               <input
                 autoFocus
@@ -1726,7 +1677,6 @@ export default function App() {
                 onChange={(e) =>
                   setProductForm({ ...productForm, name: e.target.value })
                 }
-                placeholder="e.g. Cotton T-Shirt"
               />
             </Field>
             <Field label="SKU / item code *">
@@ -1735,7 +1685,15 @@ export default function App() {
                 onChange={(e) =>
                   setProductForm({ ...productForm, sku: e.target.value })
                 }
-                placeholder="e.g. APP-003"
+              />
+            </Field>
+            <Field label="Barcode (optional)">
+              <input
+                value={productForm.barcode || ""}
+                onChange={(e) =>
+                  setProductForm({ ...productForm, barcode: e.target.value })
+                }
+                placeholder="Scan or enter barcode"
               />
             </Field>
             <Field label="HSN / SAC">
@@ -1747,78 +1705,69 @@ export default function App() {
               />
             </Field>
             <Field label="Unit">
-              <select
-                value={productForm.unit || "pcs"}
+              <input
+                value={productForm.unit || ""}
                 onChange={(e) =>
                   setProductForm({ ...productForm, unit: e.target.value })
                 }
-              >
-                {[
-                  "pcs",
-                  "kg",
-                  "g",
-                  "litre",
-                  "box",
-                  "pack",
-                  "hour",
-                  "service",
-                ].map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
+              />
             </Field>
             <Field label="Cost price (₹)">
               <input
                 type="number"
                 min="0"
-                value={productForm.cost ?? 0}
+                value={productForm.cost ?? ""}
                 onChange={(e) =>
                   setProductForm({
                     ...productForm,
-                    cost: Number(e.target.value),
+                    cost:
+                      e.target.value === "" ? undefined : Number(e.target.value),
                   })
                 }
               />
             </Field>
-            <Field label="Selling price (₹)">
+            <Field label="Selling price before GST (₹)">
               <input
                 type="number"
                 min="0"
-                value={productForm.price ?? 0}
+                value={productForm.price ?? ""}
                 onChange={(e) =>
                   setProductForm({
                     ...productForm,
-                    price: Number(e.target.value),
+                    price:
+                      e.target.value === "" ? undefined : Number(e.target.value),
                   })
                 }
               />
             </Field>
-            <Field label="GST rate">
-              <select
-                value={productForm.gst ?? 18}
+            <Field label="GST rate (%)">
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={productForm.gst ?? ""}
                 onChange={(e) =>
                   setProductForm({
                     ...productForm,
-                    gst: Number(e.target.value),
+                    gst:
+                      e.target.value === "" ? undefined : Number(e.target.value),
                   })
                 }
-              >
-                {[0, 5, 12, 18, 28].map((x) => (
-                  <option value={x} key={x}>
-                    {x}%
-                  </option>
-                ))}
-              </select>
+              />
+              <small className="field-hint">
+                Default 18%: intra-state 9% CGST + 9% SGST; inter-state 18% IGST.
+              </small>
             </Field>
             <Field label="Opening stock">
               <input
                 type="number"
                 min="0"
-                value={productForm.stock ?? 0}
+                value={productForm.stock ?? ""}
                 onChange={(e) =>
                   setProductForm({
                     ...productForm,
-                    stock: Number(e.target.value),
+                    stock:
+                      e.target.value === "" ? undefined : Number(e.target.value),
                   })
                 }
               />
@@ -1827,11 +1776,12 @@ export default function App() {
               <input
                 type="number"
                 min="0"
-                value={productForm.minStock ?? 5}
+                value={productForm.minStock ?? ""}
                 onChange={(e) =>
                   setProductForm({
                     ...productForm,
-                    minStock: Number(e.target.value),
+                    minStock:
+                      e.target.value === "" ? undefined : Number(e.target.value),
                   })
                 }
               />
@@ -1897,24 +1847,12 @@ export default function App() {
               />
             </Field>
             <Field label="State">
-              <select
-                value={customerForm.state || "Karnataka"}
+              <input
+                value={customerForm.state || ""}
                 onChange={(e) =>
                   setCustomerForm({ ...customerForm, state: e.target.value })
                 }
-              >
-                {[
-                  "Karnataka",
-                  "Maharashtra",
-                  "Tamil Nadu",
-                  "Telangana",
-                  "Kerala",
-                  "Delhi",
-                  "Other state",
-                ].map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
+              />
             </Field>
           </div>
           <div className="modal-actions">
@@ -1937,17 +1875,6 @@ export default function App() {
           onClose={() => setShowAdjust(null)}
         >
           <div className="form-grid">
-            <Field label="Adjustment type">
-              <select
-                value={adjustNote}
-                onChange={(e) => setAdjustNote(e.target.value)}
-              >
-                <option>Stock received</option>
-                <option>Stock correction</option>
-                <option>Damaged / lost</option>
-                <option>Opening balance</option>
-              </select>
-            </Field>
             <Field label="Quantity to add / remove">
               <input
                 type="number"
@@ -2027,605 +1954,6 @@ export default function App() {
           {toast}
         </div>
       )}
-    </div>
-  );
-}
-function Metric({
-  icon,
-  tone,
-  label,
-  value,
-  sub,
-}: {
-  icon: any;
-  tone: string;
-  label: string;
-  value: string;
-  sub: string;
-}) {
-  return (
-    <div className="metric">
-      <div className={`metric-icon ${tone}`}>{icon}</div>
-      <div>
-        <span>{label}</span>
-        <b>{value}</b>
-        <small>{sub}</small>
-      </div>
-    </div>
-  );
-}
-function Status({ status }: { status: string }) {
-  return <span className={`status ${statusClassName(status)}`}>{status}</span>;
-}
-function statusClassName(s: string) {
-  return s.toLowerCase().replace("-", "");
-}
-function PageHead({
-  title,
-  subtitle,
-  action,
-}: {
-  title: string;
-  subtitle: string;
-  action?: any;
-}) {
-  return (
-    <div className="page-title-row">
-      <div>
-        <div className="eyebrow">BUSINESS WORKSPACE</div>
-        <h1>
-          {title}
-          <span>.</span>
-        </h1>
-        <p>{subtitle}</p>
-      </div>
-      {action}
-    </div>
-  );
-}
-function Quick({
-  icon,
-  title,
-  text,
-  onClick,
-}: {
-  icon: any;
-  title: string;
-  text: string;
-  onClick: () => void;
-}) {
-  return (
-    <button className="quick-card" onClick={onClick}>
-      <div className="quick-icon">{icon}</div>
-      <div>
-        <b>{title}</b>
-        <p>{text}</p>
-      </div>
-      <ArrowUpRight size={16} className="quick-arrow" />
-    </button>
-  );
-}
-function Empty({
-  icon,
-  title,
-  text,
-  action,
-  onAction,
-}: {
-  icon: any;
-  title: string;
-  text: string;
-  action: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="empty-state">
-      <div className="empty-icon">{icon}</div>
-      <b>{title}</b>
-      <p>{text}</p>
-      <button className="btn light" onClick={onAction}>
-        <Plus size={14} />
-        {action}
-      </button>
-    </div>
-  );
-}
-function Field({ label, children }: { label: string; children: any }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-function Modal({
-  title,
-  subtitle,
-  onClose,
-  children,
-  wide = false,
-  printable = false,
-}: {
-  title: string;
-  subtitle: string;
-  onClose: () => void;
-  children: any;
-  wide?: boolean;
-  printable?: boolean;
-}) {
-  return (
-    <div
-      className={`modal-backdrop${printable ? " print-invoice" : ""}`}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className={`modal ${wide ? "wide" : ""}`}>
-        <div className="modal-head">
-          <div>
-            <h2>{title}</h2>
-            <p>{subtitle}</p>
-          </div>
-          <button className="close-btn" onClick={onClose}>
-            <X size={18} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-function SaleForm(props: any) {
-  const {
-    products,
-    customers,
-    saleCustomer,
-    setSaleCustomer,
-    saleDate,
-    setSaleDate,
-    saleDue,
-    setSaleDue,
-    saleSupply,
-    setSaleSupply,
-    salePlace,
-    setSalePlace,
-    saleDiscount,
-    setSaleDiscount,
-    salePaid,
-    setSalePaid,
-    saleNotes,
-    setSaleNotes,
-    saleLines,
-    setSaleLines,
-    computed,
-    onAddLine,
-    onSave,
-  } = props;
-  const selected = customers.find((c: Customer) => c.id === saleCustomer);
-  const setLine = (idx: number, key: string, val: any) =>
-    setSaleLines((v: any[]) =>
-      v.map((l, i) => (i === idx ? { ...l, [key]: val } : l)),
-    );
-  return (
-    <div className="sale-layout">
-      <div className="sale-main">
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>
-                <span className="num-badge">01</span> Customer & invoice
-              </h2>
-              <p>Who is this sale for?</p>
-            </div>
-          </div>
-          <div className="form-grid two">
-            <Field label="Customer *">
-              <select
-                value={saleCustomer}
-                onChange={(e: any) => {
-                  setSaleCustomer(e.target.value);
-                  const c = customers.find(
-                    (x: Customer) => x.id === e.target.value,
-                  );
-                  if (c) setSalePlace(c.state);
-                }}
-              >
-                <option value="">Select customer</option>
-                {customers.map((c: Customer) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Invoice date">
-              <input
-                type="date"
-                value={saleDate}
-                onChange={(e: any) => setSaleDate(e.target.value)}
-              />
-            </Field>
-            <Field label="Due date">
-              <input
-                type="date"
-                value={saleDue}
-                onChange={(e: any) => setSaleDue(e.target.value)}
-              />
-            </Field>
-            <Field label="Customer GSTIN">
-              <input
-                value={selected?.gstin || ""}
-                readOnly
-                placeholder="Not provided"
-              />
-            </Field>
-          </div>
-          {selected && (
-            <div className="selected-customer">
-              <Users size={15} />
-              <span>
-                {selected.address || "No address"} · {selected.state}
-              </span>
-              <span>{selected.phone}</span>
-            </div>
-          )}
-        </section>
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>
-                <span className="num-badge">02</span> Products & quantities
-              </h2>
-              <p>Choose products from your inventory.</p>
-            </div>
-            <button className="btn light tiny" onClick={onAddLine}>
-              <Plus size={14} /> Add item
-            </button>
-          </div>
-          <div className="sale-items">
-            {saleLines.map((l: any, idx: number) => {
-              const p = products.find((x: Product) => x.id === l.productId);
-              return (
-                <div className="sale-item" key={idx}>
-                  <div className="sale-item-name">
-                    <Field label="Product">
-                      <select
-                        value={l.productId}
-                        onChange={(e: any) =>
-                          setLine(idx, "productId", e.target.value)
-                        }
-                      >
-                        {products
-                          .filter(
-                            (x: Product) => x.stock > 0 || x.id === l.productId,
-                          )
-                          .map((x: Product) => (
-                            <option key={x.id} value={x.id}>
-                              {x.name} · {x.stock} in stock
-                            </option>
-                          ))}
-                      </select>
-                    </Field>
-                    <small>
-                      {p?.sku} · HSN {p?.hsn || "—"} · GST {p?.gst}%
-                    </small>
-                  </div>
-                  <Field label="Qty">
-                    <input
-                      type="number"
-                      min="1"
-                      max={p?.stock || 1}
-                      value={l.qty}
-                      onChange={(e: any) =>
-                        setLine(idx, "qty", Math.max(1, Number(e.target.value)))
-                      }
-                    />
-                  </Field>
-                  <div className="sale-item-rate">
-                    <span>Rate</span>
-                    <b>{fmt(p?.price || 0)}</b>
-                  </div>
-                  <div className="sale-item-amount">
-                    <span>Amount</span>
-                    <b>{fmt((p?.price || 0) * l.qty)}</b>
-                  </div>
-                  <button
-                    className="remove-line"
-                    onClick={() =>
-                      setSaleLines((v: any[]) => v.filter((_, i) => i !== idx))
-                    }
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              );
-            })}
-            {saleLines.length === 0 && (
-              <div className="empty-lines">
-                No items yet. Use “Add item” to choose a product.
-              </div>
-            )}
-          </div>
-          <div className="stock-hint">
-            <Warehouse size={14} /> Stock is checked before saving and reduced
-            automatically when the sale is completed.
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>
-                <span className="num-badge">03</span> Tax & payment
-              </h2>
-              <p>Set the supply type and amount received.</p>
-            </div>
-          </div>
-          <div className="form-grid two">
-            <Field label="Supply type">
-              <select
-                value={saleSupply}
-                onChange={(e: any) => setSaleSupply(e.target.value)}
-              >
-                <option>Intra-state</option>
-                <option>Inter-state</option>
-              </select>
-            </Field>
-            <Field label="Place of supply">
-              <select
-                value={salePlace}
-                onChange={(e: any) => setSalePlace(e.target.value)}
-              >
-                {[
-                  "Karnataka",
-                  "Maharashtra",
-                  "Tamil Nadu",
-                  "Telangana",
-                  "Kerala",
-                  "Delhi",
-                  "Other state",
-                ].map((s: string) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Discount (%)">
-              <input
-                type="number"
-                min="0"
-                max="100"
-                value={saleDiscount}
-                onChange={(e: any) => setSaleDiscount(e.target.value)}
-              />
-            </Field>
-            <Field label="Payment received (₹)">
-              <input
-                type="number"
-                min="0"
-                value={salePaid}
-                onChange={(e: any) => setSalePaid(e.target.value)}
-              />
-            </Field>
-          </div>
-          <Field label="Invoice notes / terms">
-            <textarea
-              rows={2}
-              value={saleNotes}
-              onChange={(e: any) => setSaleNotes(e.target.value)}
-            />
-          </Field>
-        </section>
-      </div>
-      <aside className="sale-summary">
-        <div className="summary-sticky">
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h2>Sale summary</h2>
-                <p>Calculated live</p>
-              </div>
-              <span className="live-chip">LIVE</span>
-            </div>
-            <div className="summary-customer">
-              <div className="customer-avatar">
-                {selected?.name?.slice(0, 1) || "?"}
-              </div>
-              <div>
-                <b>{selected?.name || "Select a customer"}</b>
-                <small>
-                  {selected?.gstin || "Customer GSTIN not provided"}
-                </small>
-              </div>
-            </div>
-            <div className="summary-lines">
-              <div>
-                <span>Subtotal</span>
-                <b>{fmt(computed.subtotal)}</b>
-              </div>
-              {computed.discount > 0 && (
-                <div>
-                  <span>Discount ({computed.discount}%)</span>
-                  <b>−{fmt(computed.discountAmount)}</b>
-                </div>
-              )}
-              <div>
-                <span>{saleSupply === "Intra-state" ? "CGST" : "IGST"}</span>
-                <b>
-                  {fmt(
-                    saleSupply === "Intra-state"
-                      ? computed.tax / 2
-                      : computed.tax,
-                  )}
-                </b>
-              </div>
-              {saleSupply === "Intra-state" && (
-                <div>
-                  <span>SGST</span>
-                  <b>{fmt(computed.tax / 2)}</b>
-                </div>
-              )}
-              <div className="summary-total">
-                <span>Total payable</span>
-                <b>{fmt(computed.total)}</b>
-              </div>
-              <div>
-                <span>Payment received</span>
-                <b>
-                  {fmt(
-                    Math.min(
-                      computed.total,
-                      Math.max(0, Number(salePaid) || 0),
-                    ),
-                  )}
-                </b>
-              </div>
-              <div className="balance">
-                <span>Balance due</span>
-                <b>
-                  {fmt(
-                    Math.max(
-                      0,
-                      computed.total - Math.max(0, Number(salePaid) || 0),
-                    ),
-                  )}
-                </b>
-              </div>
-            </div>
-            <button className="btn primary full" onClick={onSave}>
-              <CheckCircle2 size={16} /> Complete sale & create invoice
-            </button>
-            <p className="summary-footnote">
-              <CheckCircle2 size={13} /> Stock will update after successful
-              save.
-            </p>
-          </div>
-          <div className="gst-note">
-            <AlertTriangle size={15} />
-            <p>
-              Tax shown is a basic estimate using each product's configured
-              rate. Confirm the correct GST treatment before issuing.
-            </p>
-          </div>
-        </div>
-      </aside>
-    </div>
-  );
-}
-function InvoiceView({
-  sale,
-  business,
-  onPrint,
-}: {
-  sale: Sale;
-  business: any;
-  onPrint: () => void;
-}) {
-  const intra = sale.supply === "Intra-state";
-  return (
-    <div className="invoice-view">
-      <div className="invoice-head">
-        <div>
-          <div className="invoice-brand-icon">
-            <ReceiptText />
-          </div>
-          <h3>{business.name}</h3>
-          <p>{business.address}</p>
-          <p>GSTIN: {business.gstin}</p>
-          <p>
-            {business.phone} · {business.email}
-          </p>
-        </div>
-        <div className="invoice-number">
-          <span>TAX INVOICE</span>
-          <b>{sale.number}</b>
-          <small>{dateLabel(sale.date)}</small>
-        </div>
-      </div>
-      <hr />
-      <div className="invoice-parties">
-        <div>
-          <small>BILL TO</small>
-          <b>{sale.customerName}</b>
-          <p>GSTIN: {sale.customerGstin || "Not provided"}</p>
-          <p>Place of supply: {sale.place}</p>
-        </div>
-        <div>
-          <small>PAYMENT STATUS</small>
-          <Status status={sale.status} />
-          <p>Due date: {dateLabel(sale.due)}</p>
-        </div>
-      </div>
-      <table className="invoice-lines">
-        <thead>
-          <tr>
-            <th>ITEM</th>
-            <th>HSN/SAC</th>
-            <th>QTY</th>
-            <th>RATE</th>
-            <th>GST</th>
-            <th>AMOUNT</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sale.lines.map((l, i) => (
-            <tr key={i}>
-              <td>{l.name}</td>
-              <td>{l.hsn || "—"}</td>
-              <td>{l.qty}</td>
-              <td>{fmt(l.rate)}</td>
-              <td>{l.gst}%</td>
-              <td>{fmt(l.qty * l.rate)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="invoice-bottom">
-        <div className="invoice-note">
-          <b>Notes</b>
-          <p>{sale.notes || "—"}</p>
-          <small>Thank you for your business.</small>
-        </div>
-        <div className="invoice-totals">
-          <div>
-            <span>Subtotal</span>
-            <b>{fmt(sale.subtotal)}</b>
-          </div>
-          {sale.discount > 0 && (
-            <div>
-              <span>Discount ({sale.discount}%)</span>
-              <b>−{fmt((sale.subtotal * sale.discount) / 100)}</b>
-            </div>
-          )}
-          <div>
-            <span>{intra ? "CGST" : "IGST"}</span>
-            <b>{fmt(intra ? sale.tax / 2 : sale.tax)}</b>
-          </div>
-          {intra && (
-            <div>
-              <span>SGST</span>
-              <b>{fmt(sale.tax / 2)}</b>
-            </div>
-          )}
-          <div className="invoice-grand">
-            <span>Total</span>
-            <b>{fmt(sale.total)}</b>
-          </div>
-          <div>
-            <span>Paid</span>
-            <b>{fmt(sale.paid)}</b>
-          </div>
-          <div>
-            <span>Balance due</span>
-            <b>{fmt(Math.max(0, sale.total - sale.paid))}</b>
-          </div>
-        </div>
-      </div>
-      <div className="invoice-sign">
-        <span>Computer-generated invoice preview</span>
-        <div>
-          <i />
-          <b>Authorised signatory</b>
-        </div>
-      </div>
     </div>
   );
 }

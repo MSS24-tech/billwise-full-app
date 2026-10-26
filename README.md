@@ -6,7 +6,8 @@ A local-first retail billing and inventory management MVP built with React + Typ
 - Dashboard with sales, receivables, stock alerts and recent invoices
 - Product catalogue with SKU, HSN/SAC, price, cost, GST rate and stock
 - Customer directory
-- Create sales invoices with multiple items, quantities, discounts and GST
+- Create sales invoices with multiple items, quantities, discounts and GST; prices are GST-exclusive, discounts reduce the taxable amount, tax is rounded to paise, and the final payable total is rounded up to the next whole rupee
+- Store product barcodes and scan them into a sale with USB/Bluetooth keyboard-wedge barcode readers (SKU scans are also supported)
 - Intra-state CGST/SGST split and inter-state IGST calculation (user-selected supply type)
 - Stock deduction when a sale is completed; stock is restored if an invoice is deleted
 - Payment status and record-payment action
