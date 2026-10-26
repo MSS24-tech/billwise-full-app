@@ -192,20 +192,21 @@ export function SaleForm(props: any) {
                   <Field label="Qty">
                     <input
                       type="number"
-                      min="1"
-                      max={p?.stock || 1}
+                      min="0.001"
+                      step="any"
+                      max={p?.stock || undefined}
                       value={l.qty}
                       onChange={(e: any) =>
-                        setLine(idx, "qty", Math.max(1, Number(e.target.value)))
+                        setLine(idx, "qty", Math.max(0, Number(e.target.value)))
                       }
                     />
                   </Field>
                   <div className="sale-item-rate">
-                    <span>Rate</span>
+                    <span>Rate incl. GST</span>
                     <b>{fmt(p?.price || 0)}</b>
                   </div>
                   <div className="sale-item-amount">
-                    <span>Amount</span>
+                    <span>Amount incl. GST</span>
                     <b>{fmt((p?.price || 0) * l.qty)}</b>
                   </div>
                   <button
@@ -299,12 +300,12 @@ export function SaleForm(props: any) {
             </div>
             <div className="summary-lines">
               <div>
-                <span>Subtotal</span>
+                <span>Subtotal (incl. GST)</span>
                 <b>{fmt(computed.subtotal)}</b>
               </div>
               {computed.discount > 0 && (
                 <div>
-                  <span>Discount ({computed.discount}%)</span>
+                  <span>Discount ({computed.discount}%, incl. GST)</span>
                   <b>−{fmt(computed.discountAmount)}</b>
                 </div>
               )}

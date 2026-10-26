@@ -5,8 +5,11 @@ import {
   emptyBusiness,
   fmt,
   id,
+  priceWithGst,
   read,
+  saleQuantitiesByProduct,
   today,
+  updateStockForSale,
 } from "./domain";
 import type { Customer, Product, Sale, SaleLine, Tab } from "./domain";
 import {
@@ -20,6 +23,8 @@ import {
 } from "./components/Ui";
 import { InvoiceView } from "./components/InvoiceView";
 import { SaleForm } from "./components/SaleForm";
+import { Chatbot } from "./components/Chatbot";
+import type { ChatResult } from "./components/Chatbot";
 import {
   LayoutDashboard,
   ReceiptText,
@@ -59,9 +64,16 @@ export default function App() {
     [mobile, setMobile] = useState(false),
     [query, setQuery] = useState(""),
     [toast, setToast] = useState("");
-  const [products, setProducts] = useState<Product[]>(() =>
-    read("bw-products", []),
-  );
+  const [products, setProducts] = useState<Product[]>(() => {
+    const savedProducts = read<Product[]>("bw-products", []);
+    if (localStorage.getItem("bw-prices-include-gst") === "true") {
+      return savedProducts;
+    }
+    return savedProducts.map((product) => ({
+      ...product,
+      price: priceWithGst(product.price, product.gst),
+    }));
+  });
   const [customers, setCustomers] = useState<Customer[]>(() =>
     read("bw-customers", []),
   );
@@ -103,6 +115,7 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     localStorage.setItem("bw-products", JSON.stringify(products));
+    localStorage.setItem("bw-prices-include-gst", "true");
   }, [products]);
   useEffect(() => {
     localStorage.setItem("bw-customers", JSON.stringify(customers));
@@ -166,11 +179,11 @@ export default function App() {
               productId: p.id,
               name: p.name,
               hsn: p.hsn,
-              qty: Math.max(1, l.qty),
+              qty: Math.max(0, Number(l.qty) || 0),
               rate: p.price,
               gst: p.gst,
               cost: p.cost,
-              amount: p.price * Math.max(1, l.qty),
+              amount: p.price * Math.max(0, Number(l.qty) || 0),
             }
           : null;
       })
@@ -188,6 +201,59 @@ export default function App() {
     received = sales.reduce((a, s) => a + s.paid, 0),
     outstanding = sales.reduce((a, s) => a + Math.max(0, s.total - s.paid), 0),
     lowStock = products.filter((p) => p.stock <= p.minStock);
+  const todaySales = sales.filter((sale) => sale.date === today());
+  const todayRevenue = todaySales.reduce((sum, sale) => sum + sale.total, 0);
+  const todayGrossProfit = todaySales.reduce(
+    (sum, sale) =>
+      sum +
+      sale.lines.reduce(
+        (lineProfit, line) =>
+          lineProfit +
+          (line.rate / (1 + line.gst / 100) *
+            (1 - Math.min(100, Math.max(0, sale.discount)) / 100) -
+            line.cost) *
+            line.qty,
+        0,
+      ),
+    0,
+  );
+  const paymentFollowUp = sales
+    .filter((sale) => sale.total > sale.paid)
+    .sort((a, b) => b.total - b.paid - (a.total - a.paid))[0];
+  const demandWindowEnd = today();
+  const demandWindowStartDate = new Date();
+  demandWindowStartDate.setDate(demandWindowStartDate.getDate() - 29);
+  const demandWindowStart = [
+    demandWindowStartDate.getFullYear(),
+    String(demandWindowStartDate.getMonth() + 1).padStart(2, "0"),
+    String(demandWindowStartDate.getDate()).padStart(2, "0"),
+  ].join("-");
+  const recentUnitsSold = new Map<string, number>();
+  for (const sale of sales) {
+    if (sale.date < demandWindowStart || sale.date > demandWindowEnd) continue;
+    for (const line of sale.lines) {
+      recentUnitsSold.set(
+        line.productId,
+        (recentUnitsSold.get(line.productId) ?? 0) + line.qty,
+      );
+    }
+  }
+  const restockRecommendations = products
+    .map((product) => {
+      const unitsSold = recentUnitsSold.get(product.id) ?? 0;
+      const targetStock = Math.max(Math.ceil(unitsSold), product.minStock);
+      const suggestedQuantity = Math.max(0, targetStock - product.stock);
+      return {
+        product,
+        unitsSold,
+        targetStock,
+        suggestedQuantity,
+        daysOfStock: unitsSold > 0 ? (product.stock / unitsSold) * 30 : Infinity,
+      };
+    })
+    .filter((item) => item.suggestedQuantity > 0)
+    .sort((a, b) => a.daysOfStock - b.daysOfStock)
+    .slice(0, 5);
   const resetSaleForm = () => {
     setSaleCustomer("");
     setSaleDate("");
@@ -223,10 +289,18 @@ export default function App() {
       notify("Select a customer and add at least one item.");
       return;
     }
-    for (const l of computed.lines) {
-      const p = products.find((p) => p.id === l.productId);
-      if (!p || l.qty > p.stock) {
-        notify(`Not enough stock for ${l.name}. Available: ${p?.stock ?? 0}`);
+    const requestedQuantities = saleQuantitiesByProduct(computed.lines);
+    for (const [productId, quantity] of requestedQuantities) {
+      const product = products.find((item) => item.id === productId);
+      if (
+        !product ||
+        !Number.isFinite(quantity) ||
+        quantity <= 0 ||
+        quantity > product.stock
+      ) {
+        notify(
+          `Not enough stock for ${product?.name ?? "a selected product"}. Available: ${product?.stock ?? 0}; requested: ${quantity}.`,
+        );
         return;
       }
     }
@@ -258,14 +332,10 @@ export default function App() {
       status:
         paid >= computed.total ? "Paid" : paid > 0 ? "Part-paid" : "Unpaid",
       notes: saleNotes,
+      pricesIncludeGst: true,
     };
     setSales((v) => [sale, ...v]);
-    setProducts((v) =>
-      v.map((p) => {
-        const l = computed.lines.find((l) => l.productId === p.id);
-        return l ? { ...p, stock: p.stock - l.qty } : p;
-      }),
-    );
+    setProducts((v) => updateStockForSale(v, computed.lines, -1));
     resetSaleForm();
     setShowSale(false);
     setTab("Sales invoices");
@@ -304,12 +374,7 @@ export default function App() {
     )
       return;
     setSales((v) => v.filter((x) => x.id !== s.id));
-    setProducts((v) =>
-      v.map((p) => {
-        const line = s.lines.find((l) => l.productId === p.id);
-        return line ? { ...p, stock: p.stock + line.qty } : p;
-      }),
-    );
+    setProducts((v) => updateStockForSale(v, s.lines, 1));
     setViewSale(null);
     notify("Invoice deleted and stock restored.");
   };
@@ -349,8 +414,22 @@ export default function App() {
     }
     const gst = Number(productForm.gst ?? 0);
     const price = Number(productForm.price ?? 0);
-    if (!Number.isFinite(gst) || gst < 0 || !Number.isFinite(price) || price < 0) {
-      notify("Enter a valid selling price and non-negative GST rate.");
+    const cost = Number(productForm.cost ?? 0);
+    const openingStock = Number(productForm.stock ?? 0);
+    const minStock = Number(productForm.minStock ?? 0);
+    if (
+      !Number.isFinite(gst) ||
+      gst < 0 ||
+      !Number.isFinite(price) ||
+      price < 0 ||
+      !Number.isFinite(cost) ||
+      cost < 0 ||
+      !Number.isFinite(openingStock) ||
+      openingStock < 0 ||
+      !Number.isFinite(minStock) ||
+      minStock < 0
+    ) {
+      notify("Price, cost, opening stock, and threshold must be valid non-negative numbers.");
       return;
     }
     setProducts((v) => [
@@ -361,11 +440,11 @@ export default function App() {
         barcode,
         hsn: productForm.hsn || "",
         unit: productForm.unit || "",
-        cost: Number(productForm.cost) || 0,
+        cost,
         price,
         gst,
-        stock: Number(productForm.stock) || 0,
-        minStock: Number(productForm.minStock) || 0,
+        stock: openingStock,
+        minStock,
       },
       ...v,
     ]);
@@ -381,8 +460,11 @@ export default function App() {
     notify("Product added.");
   };
   const addProductToSale = (product: Product) => {
-    const currentQty =
-      saleLines.find((line) => line.productId === product.id)?.qty ?? 0;
+    const currentQty = saleLines.reduce(
+      (quantity, line) =>
+        line.productId === product.id ? quantity + line.qty : quantity,
+      0,
+    );
     if (currentQty >= product.stock) {
       notify(`No more stock available for ${product.name}.`);
       return;
@@ -483,7 +565,7 @@ export default function App() {
               "Barcode",
               "HSN/SAC",
               "Cost",
-              "Selling price",
+              "Selling price (incl. GST)",
               "GST %",
               "Stock",
               "Low stock threshold",
@@ -517,7 +599,14 @@ export default function App() {
     const blob = new Blob(
       [
         JSON.stringify(
-          { business, products, customers, sales, version: 1 },
+          {
+            business,
+            products,
+            customers,
+            sales,
+            version: 2,
+            pricesIncludeGst: true,
+          },
           null,
           2,
         ),
@@ -546,7 +635,15 @@ export default function App() {
           throw new Error("Invalid backup");
         if (!window.confirm("Import backup and replace current data?")) return;
         setBusiness(d.business || business);
-        setProducts(d.products);
+        setProducts(
+          d.products.map((product: Product) => ({
+            ...product,
+            price:
+              d.pricesIncludeGst === true
+                ? product.price
+                : priceWithGst(product.price, product.gst),
+          })),
+        );
         setCustomers(d.customers);
         setSales(d.sales);
         notify("Backup imported.");
@@ -704,6 +801,94 @@ export default function App() {
                   sub={`${lowStock.length} products low on stock`}
                 />
               </div>
+              <section className="business-pulse">
+                <div className="pulse-heading">
+                  <div className="pulse-heading-icon">
+                    <CalendarDays size={17} />
+                  </div>
+                  <div>
+                    <h2>Today’s business pulse</h2>
+                    <p>{dateLabel(today())} · A quick view of what needs attention</p>
+                  </div>
+                </div>
+                <div className="pulse-stats">
+                  <div className="pulse-stat">
+                    <span>Sales today</span>
+                    <b>{fmt(todayRevenue)}</b>
+                    <small>{todaySales.length} invoices</small>
+                  </div>
+                  <div className="pulse-stat">
+                    <span>Estimated gross profit</span>
+                    <b>{fmt(todayGrossProfit)}</b>
+                    <small>Before overheads and tax</small>
+                  </div>
+                </div>
+                <div className="pulse-alerts">
+                  {paymentFollowUp ? (
+                    <button
+                      className="pulse-alert payment"
+                      onClick={() => setViewSale(paymentFollowUp)}
+                    >
+                      <span className="pulse-alert-icon">
+                        <Wallet size={16} />
+                      </span>
+                      <span className="pulse-alert-copy">
+                        <b>Payment follow-up</b>
+                        <small>
+                          {paymentFollowUp.customerName} ·{" "}
+                          {fmt(paymentFollowUp.total - paymentFollowUp.paid)}{" "}
+                          outstanding
+                        </small>
+                      </span>
+                      <ArrowUpRight size={15} />
+                    </button>
+                  ) : (
+                    <div className="pulse-alert clear">
+                      <span className="pulse-alert-icon">
+                        <CheckCircle2 size={16} />
+                      </span>
+                      <span className="pulse-alert-copy">
+                        <b>Payments up to date</b>
+                        <small>No outstanding invoices to follow up.</small>
+                      </span>
+                    </div>
+                  )}
+                  {lowStock.length > 0 ? (
+                    <button
+                      className="pulse-alert inventory"
+                      onClick={() => {
+                        const product = lowStock[0];
+                        setShowAdjust(product);
+                        setAdjustQty("");
+                      }}
+                    >
+                      <span className="pulse-alert-icon">
+                        <Package size={16} />
+                      </span>
+                      <span className="pulse-alert-copy">
+                        <b>
+                          {lowStock.length} low-stock product
+                          {lowStock.length === 1 ? "" : "s"}
+                        </b>
+                        <small>
+                          {lowStock[0].name} · {lowStock[0].stock} left
+                        </small>
+                      </span>
+                      <ArrowUpRight size={15} />
+                    </button>
+                  ) : (
+                    <div className="pulse-alert clear">
+                      <span className="pulse-alert-icon">
+                        <CheckCircle2 size={16} />
+                      </span>
+                      <span className="pulse-alert-copy">
+                        <b>Stock looks healthy</b>
+                        <small>No products below their stock threshold.</small>
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </section>
               <div className="dash-grid">
                 <section className="panel sales-panel">
                   <div className="panel-head">
@@ -983,7 +1168,7 @@ export default function App() {
             <div className="products-page">
               <PageHead
                 title="Products & services"
-                subtitle="A clear view of your catalogue, GST rates, pricing and stock."
+                subtitle="A clear view of your catalogue, GST-inclusive prices, tax rates and stock."
                 action={
                   <button
                     className="btn primary"
@@ -1052,7 +1237,7 @@ export default function App() {
                     </p>
                   </div>
                   <span className="product-price-hint">
-                    Prices are before GST
+                    Selling prices include GST
                   </span>
                 </div>
                 <div className="table-wrap">
@@ -1066,7 +1251,7 @@ export default function App() {
                         <th>BARCODE</th>
                         <th>HSN/SAC</th>
                         <th>COST</th>
-                        <th>SELLING PRICE · BEFORE GST</th>
+                        <th>SELLING PRICE (INCL. GST)</th>
                         <th>GST</th>
                         <th>STOCK</th>
                         <th></th>
@@ -1093,9 +1278,6 @@ export default function App() {
                           <td className="strong">
                             <div className="product-price-cell">
                               <b>{fmt(p.price)}</b>
-                              <small>
-                                {fmt(p.price + (p.price * p.gst) / 100)} incl. GST
-                              </small>
                             </div>
                           </td>
                           <td>
@@ -1296,6 +1478,75 @@ export default function App() {
                   sub="Estimated at selling price"
                 />
               </div>
+              <section className="panel restock-panel">
+                <div className="panel-head">
+                  <div>
+                    <h2>Smart restock planner</h2>
+                    <p>
+                      Estimates based on units sold in the last 30 days, for
+                      roughly 30 days of future cover.
+                    </p>
+                  </div>
+                  <span className="restock-window">LAST 30 DAYS</span>
+                </div>
+                {restockRecommendations.length ? (
+                  <div className="restock-list">
+                    {restockRecommendations.map(
+                      ({
+                        product,
+                        unitsSold,
+                        targetStock,
+                        suggestedQuantity,
+                        daysOfStock,
+                      }) => (
+                        <div className="restock-row" key={product.id}>
+                          <div className="restock-product">
+                            <div className="restock-icon">
+                              <Package size={16} />
+                            </div>
+                            <div>
+                              <b>{product.name}</b>
+                              <small>
+                                {unitsSold} sold · {product.stock} in stock
+                              </small>
+                            </div>
+                          </div>
+                          <div className="restock-cover">
+                            <b>
+                              {Number.isFinite(daysOfStock)
+                                ? `${Math.floor(daysOfStock)} days`
+                                : "—"}
+                            </b>
+                            <small>estimated cover</small>
+                          </div>
+                          <div className="restock-quantity">
+                            <b>
+                              {suggestedQuantity} {product.unit}
+                            </b>
+                            <small>to reach {targetStock} target stock</small>
+                          </div>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                ) : (
+                  <div className="restock-empty">
+                    <CheckCircle2 size={18} />
+                    <div>
+                      <b>No restock suggestions yet</b>
+                      <p>
+                        Recent sales are not outpacing current stock. Products
+                        without recent sales may still need a manual stock
+                        check.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <p className="restock-disclaimer">
+                  Planning estimate only—not a purchase order. Actual demand may
+                  change.
+                </p>
+              </section>
               <div className="panel">
                 <div className="panel-head">
                   <div>
@@ -1666,7 +1917,7 @@ export default function App() {
       {showProduct && (
         <Modal
           title="Add a product"
-          subtitle="New products use 18% GST by default. Selling price is entered before GST."
+          subtitle="New products use 18% GST by default. Selling price includes GST."
           onClose={() => setShowProduct(false)}
         >
           <div className="form-grid two product-entry-form">
@@ -1726,7 +1977,7 @@ export default function App() {
                 }
               />
             </Field>
-            <Field label="Selling price before GST (₹)">
+            <Field label="Selling price (₹)">
               <input
                 type="number"
                 min="0"
@@ -1755,13 +2006,15 @@ export default function App() {
                 }
               />
               <small className="field-hint">
-                Default 18%: intra-state 9% CGST + 9% SGST; inter-state 18% IGST.
+                Default 18%. GST is included in the selling price and shown
+                separately on the invoice.
               </small>
             </Field>
             <Field label="Opening stock">
               <input
                 type="number"
                 min="0"
+                step="any"
                 value={productForm.stock ?? ""}
                 onChange={(e) =>
                   setProductForm({
@@ -1776,6 +2029,7 @@ export default function App() {
               <input
                 type="number"
                 min="0"
+                step="any"
                 value={productForm.minStock ?? ""}
                 onChange={(e) =>
                   setProductForm({
@@ -1878,6 +2132,7 @@ export default function App() {
             <Field label="Quantity to add / remove">
               <input
                 type="number"
+                step="any"
                 value={adjustQty}
                 onChange={(e) => setAdjustQty(e.target.value)}
               />
@@ -1948,6 +2203,28 @@ export default function App() {
           </div>
         </Modal>
       )}
+      <Chatbot
+        revenue={revenue}
+        outstanding={outstanding}
+        sales={sales}
+        products={products}
+        customers={customers}
+        onNavigate={openTab}
+        onOpenResult={(result: ChatResult) => {
+          setMobile(false);
+          setShowSale(false);
+          if (result.sale) {
+            setTab("Sales invoices");
+            setViewSale(result.sale);
+          } else if (result.product) {
+            setQuery(result.product.name);
+            setTab("Products");
+          } else if (result.customer) {
+            setQuery(result.customer.name);
+            setTab("Customers");
+          }
+        }}
+      />
       {toast && (
         <div className="toast">
           <CheckCircle2 size={17} />

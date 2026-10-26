@@ -13,6 +13,7 @@ export function InvoiceView({
   onPrint: () => void;
 }) {
   const intra = sale.supply === "Intra-state";
+  const pricesIncludeGst = sale.pricesIncludeGst === true;
   const legacyCgst = intra ? roundMoney(sale.tax / 2) : 0;
   const legacySgst = intra ? roundMoney(sale.tax - legacyCgst) : 0;
   const cgst = sale.cgst ?? legacyCgst;
@@ -20,7 +21,19 @@ export function InvoiceView({
   const igst = sale.igst ?? (intra ? 0 : roundMoney(sale.tax));
   const taxableSubtotal =
     sale.taxableSubtotal ??
-    calculateSaleTotals(sale.lines, sale.discount, sale.supply).taxableSubtotal;
+    (pricesIncludeGst
+      ? calculateSaleTotals(sale.lines, sale.discount, sale.supply)
+          .taxableSubtotal
+      : roundMoney(
+          sale.lines.reduce(
+            (sum, line) =>
+              sum +
+              roundMoney(
+                line.rate * line.qty * (1 - sale.discount / 100),
+              ),
+            0,
+          ),
+        ));
   const roundingAdjustment =
     sale.roundingAdjustment ??
     roundMoney(sale.total - roundMoney(taxableSubtotal + sale.tax));
@@ -63,9 +76,11 @@ export function InvoiceView({
             <th>ITEM</th>
             <th>HSN/SAC</th>
             <th>QTY</th>
-            <th>RATE (BEFORE GST)</th>
+            <th>{pricesIncludeGst ? "RATE (INCL. GST)" : "RATE (BEFORE GST)"}</th>
             <th>GST</th>
-            <th>AMOUNT (BEFORE GST)</th>
+            <th>
+              {pricesIncludeGst ? "AMOUNT (INCL. GST)" : "AMOUNT (BEFORE GST)"}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -89,12 +104,14 @@ export function InvoiceView({
         </div>
         <div className="invoice-totals">
           <div>
-            <span>Subtotal</span>
+            <span>{pricesIncludeGst ? "Subtotal (incl. GST)" : "Subtotal"}</span>
             <b>{fmt(sale.subtotal)}</b>
           </div>
           {sale.discount > 0 && (
             <div>
-              <span>Discount ({sale.discount}%)</span>
+              <span>
+                Discount ({sale.discount}%{pricesIncludeGst ? ", incl. GST" : ""})
+              </span>
               <b>
                 −
                 {fmt(

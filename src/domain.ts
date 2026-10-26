@@ -62,6 +62,7 @@ export type Sale = {
   paid: number;
   status: "Paid" | "Part-paid" | "Unpaid";
   notes: string;
+  pricesIncludeGst?: boolean;
 };
 export type SaleTotals = {
   subtotal: number;
@@ -74,6 +75,29 @@ export type SaleTotals = {
   tax: number;
   roundingAdjustment: number;
   total: number;
+};
+export const saleQuantitiesByProduct = (
+  lines: Pick<SaleLine, "productId" | "qty">[],
+) =>
+  lines.reduce((quantities, line) => {
+    quantities.set(
+      line.productId,
+      (quantities.get(line.productId) ?? 0) + line.qty,
+    );
+    return quantities;
+  }, new Map<string, number>());
+export const updateStockForSale = (
+  products: Product[],
+  lines: Pick<SaleLine, "productId" | "qty">[],
+  direction: 1 | -1,
+) => {
+  const quantities = saleQuantitiesByProduct(lines);
+  return products.map((product) => {
+    const quantity = quantities.get(product.id);
+    return quantity === undefined
+      ? product
+      : { ...product, stock: product.stock + quantity * direction };
+  });
 };
 export type Tab =
   | "Overview"
@@ -92,6 +116,8 @@ export const fmt = (n: number) =>
   }).format(n);
 export const roundMoney = (amount: number) =>
   Math.round((amount + Number.EPSILON) * 100) / 100;
+export const priceWithGst = (amount: number, gstRate: number) =>
+  roundMoney(amount * (1 + gstRate / 100));
 export const roundToRupee = (amount: number) => {
   const roundedAmount = roundMoney(amount);
   const wholeAmount = Math.floor(roundedAmount);
@@ -107,14 +133,18 @@ export const calculateSaleTotals = (
     : 0;
   const calculatedLines = lines.map((line) => {
     const amount = roundMoney(line.rate * line.qty);
-    const taxableAmount = roundMoney(amount * (1 - discount / 100));
-    const lineTax = roundMoney((taxableAmount * line.gst) / 100);
+    const discountedAmount = roundMoney(amount * (1 - discount / 100));
+    const taxableAmount = roundMoney(
+      discountedAmount / (1 + line.gst / 100),
+    );
+    const lineTax = roundMoney(discountedAmount - taxableAmount);
     const cgst = supply === "Intra-state" ? roundMoney(lineTax / 2) : 0;
     const sgst =
       supply === "Intra-state" ? roundMoney(lineTax - cgst) : 0;
     return {
       ...line,
       amount,
+      discountedAmount,
       taxableAmount,
       cgst,
       sgst,
@@ -127,7 +157,10 @@ export const calculateSaleTotals = (
   const taxableSubtotal = roundMoney(
     calculatedLines.reduce((sum, line) => sum + line.taxableAmount, 0),
   );
-  const discountAmount = roundMoney(subtotal - taxableSubtotal);
+  const discountedSubtotal = roundMoney(
+    calculatedLines.reduce((sum, line) => sum + line.discountedAmount, 0),
+  );
+  const discountAmount = roundMoney(subtotal - discountedSubtotal);
   const cgst =
     supply === "Intra-state"
       ? roundMoney(
