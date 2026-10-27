@@ -10,6 +10,16 @@ export type Product = {
   gst: number;
   stock: number;
   minStock: number;
+  minMarginPct?: number;
+  batches?: StockBatch[];
+  unbatchedStock?: number;
+};
+export type StockBatch = {
+  id: string;
+  code: string;
+  expiryDate: string;
+  receivedDate: string;
+  quantity: number;
 };
 export type Customer = {
   id: string;
@@ -63,6 +73,66 @@ export type Sale = {
   status: "Paid" | "Part-paid" | "Unpaid";
   notes: string;
   pricesIncludeGst?: boolean;
+  followUpStatus?: "Not contacted" | "Contacted" | "Promised";
+};
+export type Proforma = Omit<Sale, "status"> & {
+  status: "Open" | "Converted";
+  validUntil: string;
+  convertedSaleId?: string;
+};
+export type PurchaseEntry = {
+  id: string;
+  number: string;
+  date: string;
+  supplier: string;
+  supplierInvoice: string;
+  notes: string;
+  lines: {
+    productId: string;
+    productName: string;
+    qty: number;
+    unitCost: number;
+    gst: number;
+    batchCode?: string;
+    expiryDate?: string;
+  }[];
+  subtotal: number;
+  tax: number;
+  total: number;
+};
+export type SalesReturn = {
+  id: string;
+  number: string;
+  saleId: string;
+  saleNumber: string;
+  customerName: string;
+  date: string;
+  lines: { productId: string; productName: string; qty: number; amount: number }[];
+  refundAmount: number;
+  notes: string;
+};
+export type Expense = {
+  id: string;
+  date: string;
+  category: string;
+  description: string;
+  amount: number;
+  paymentMethod: string;
+};
+export type SupplierPayment = {
+  id: string;
+  purchaseId: string;
+  purchaseNumber: string;
+  supplier: string;
+  date: string;
+  amount: number;
+  notes: string;
+};
+export type SalePayment = {
+  id: string;
+  saleId: string;
+  date: string;
+  amount: number;
 };
 export type SaleTotals = {
   subtotal: number;
@@ -94,15 +164,53 @@ export const updateStockForSale = (
   const quantities = saleQuantitiesByProduct(lines);
   return products.map((product) => {
     const quantity = quantities.get(product.id);
-    return quantity === undefined
-      ? product
-      : { ...product, stock: product.stock + quantity * direction };
+    if (quantity === undefined) return product;
+    const batches = product.batches ?? [];
+    if (direction === 1) {
+      return {
+        ...product,
+        stock: product.stock + quantity,
+        unbatchedStock:
+          (product.unbatchedStock ??
+            product.stock - batches.reduce((sum, batch) => sum + batch.quantity, 0)) +
+          quantity,
+      };
+    }
+    let remaining = quantity;
+    const sortedBatches = [...batches].sort((a, b) => {
+      if (!a.expiryDate) return b.expiryDate ? 1 : 0;
+      if (!b.expiryDate) return -1;
+      return a.expiryDate.localeCompare(b.expiryDate);
+    });
+    const updatedBatches = sortedBatches.map((batch) => {
+      if (remaining <= 0) return batch;
+      const deducted = Math.min(batch.quantity, remaining);
+      remaining -= deducted;
+      return { ...batch, quantity: batch.quantity - deducted };
+    });
+    const unbatched =
+      product.unbatchedStock ??
+      product.stock - batches.reduce((sum, batch) => sum + batch.quantity, 0);
+    const remainingUnbatched = Math.max(0, unbatched - remaining);
+    return {
+      ...product,
+      stock: product.stock - quantity,
+      batches: updatedBatches,
+      unbatchedStock: remainingUnbatched,
+    };
   });
 };
 export type Tab =
   | "Overview"
   | "New sale"
   | "Sales invoices"
+  | "Proforma invoices"
+  | "New proforma"
+  | "Purchases"
+  | "Sales returns"
+  | "Expenses & cashbook"
+  | "Payment reminders"
+  | "Supplier payments"
   | "Products"
   | "Customers"
   | "Inventory"
@@ -119,9 +227,8 @@ export const roundMoney = (amount: number) =>
 export const priceWithGst = (amount: number, gstRate: number) =>
   roundMoney(amount * (1 + gstRate / 100));
 export const roundToRupee = (amount: number) => {
-  const roundedAmount = roundMoney(amount);
-  const wholeAmount = Math.floor(roundedAmount);
-  return roundedAmount - wholeAmount < 0.5 ? wholeAmount : wholeAmount + 1;
+  if (!Number.isFinite(amount)) return 0;
+  return Math.ceil(amount);
 };
 export const calculateSaleTotals = (
   lines: SaleLine[],

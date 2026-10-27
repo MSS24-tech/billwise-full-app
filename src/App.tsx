@@ -1,17 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  dateLabel,
-  calculateSaleTotals,
-  emptyBusiness,
-  fmt,
-  id,
-  priceWithGst,
-  read,
-  saleQuantitiesByProduct,
-  today,
-  updateStockForSale,
+import { useMemo, useRef, useState } from "react";
+import { calculateSaleTotals, dateLabel, emptyBusiness, fmt, id, today } from "./domain";
+import type {
+  Customer,
+  Expense,
+  Product,
+  Proforma,
+  PurchaseEntry,
+  Sale,
+  SalePayment,
+  SalesReturn,
+  SupplierPayment,
+  Tab,
 } from "./domain";
-import type { Customer, Product, Sale, SaleLine, Tab } from "./domain";
+import { parseBusinessBackup } from "./business/backup";
+import { useBusinessData } from "./business/useBusinessData";
+import { GST_RATES, INDIAN_STATES, PRODUCT_UNITS } from "./business/formOptions";
+import {
+  getBasketAffinities,
+  getCustomerInsights,
+  getInventoryMetrics,
+  getRestockRecommendations,
+  getSalesMetrics,
+} from "./business/analytics";
+import { createCustomer, createProduct } from "./business/catalog";
+import { createProforma } from "./business/transactions";
+import { getSaleBalance } from "./business/operations";
+import {
+  addProductQuantity,
+  adjustProductStock,
+  buildSalePreview,
+  createSale,
+  findProductByScan,
+  getNextAvailableSaleProduct,
+  getSaleSupply,
+  recordSalePayment,
+  restoreStockForDeletedSale,
+} from "./business/sales";
 import {
   Empty,
   Field,
@@ -23,8 +47,19 @@ import {
 } from "./components/Ui";
 import { InvoiceView } from "./components/InvoiceView";
 import { SaleForm } from "./components/SaleForm";
+import { PurchaseEntryPage } from "./components/PurchaseEntryPage";
+import {
+  ExpensesCashbookPage,
+  PaymentRemindersPage,
+  SalesReturnsPage,
+  SupplierPaymentsPage,
+} from "./components/BusinessOperationsPages";
 import { Chatbot } from "./components/Chatbot";
 import type { ChatResult } from "./components/Chatbot";
+import { buildReportData } from "./reports/reportData";
+import { exportReportCsv } from "./reports/exportCsv";
+import { exportReportExcel } from "./reports/exportExcel";
+import { exportReportPdf } from "./reports/exportPdf";
 import {
   LayoutDashboard,
   ReceiptText,
@@ -47,12 +82,15 @@ import {
   CheckCircle2,
   ArrowUpRight,
   FileText,
+  FileSpreadsheet,
   ShoppingCart,
   RotateCcw,
   Upload,
   Save,
   Boxes,
   Wallet,
+  BellRing,
+  Truck,
   CalendarDays,
   Eye,
   Minus,
@@ -63,29 +101,39 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("Overview"),
     [mobile, setMobile] = useState(false),
     [query, setQuery] = useState(""),
-    [toast, setToast] = useState("");
-  const [products, setProducts] = useState<Product[]>(() => {
-    const savedProducts = read<Product[]>("bw-products", []);
-    if (localStorage.getItem("bw-prices-include-gst") === "true") {
-      return savedProducts;
-    }
-    return savedProducts.map((product) => ({
-      ...product,
-      price: priceWithGst(product.price, product.gst),
-    }));
-  });
-  const [customers, setCustomers] = useState<Customer[]>(() =>
-    read("bw-customers", []),
-  );
-  const [sales, setSales] = useState<Sale[]>(() => read("bw-sales", []));
-  const [business, setBusiness] = useState(() =>
-    read("bw-business", emptyBusiness),
-  );
+    [toast, setToast] = useState(""),
+    [errorPopup, setErrorPopup] = useState("");
+  const {
+    business,
+    setBusiness,
+    products,
+    setProducts,
+    customers,
+    setCustomers,
+    sales,
+    setSales,
+    proformas,
+    setProformas,
+    purchases,
+    setPurchases,
+    returns,
+    setReturns,
+    expenses,
+    setExpenses,
+    supplierPayments,
+    setSupplierPayments,
+    salePayments,
+    setSalePayments,
+  } = useBusinessData();
   const [showProduct, setShowProduct] = useState(false),
     [showCustomer, setShowCustomer] = useState(false),
     [showAdjust, setShowAdjust] = useState<Product | null>(null),
     [showSale, setShowSale] = useState(false),
-    [viewSale, setViewSale] = useState<Sale | null>(null);
+    [viewSale, setViewSale] = useState<Sale | null>(null),
+    [paymentSale, setPaymentSale] = useState<Sale | null>(null),
+    [viewProforma, setViewProforma] = useState<Proforma | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [marginWarnings, setMarginWarnings] = useState<string[]>([]);
   const [productForm, setProductForm] = useState<Partial<Product>>({
     name: "",
     sku: "",
@@ -93,6 +141,12 @@ export default function App() {
     hsn: "",
     unit: "",
     gst: 18,
+  });
+  const [productNumbers, setProductNumbers] = useState({
+    cost: "",
+    price: "",
+    stock: "",
+    minStock: "",
   });
   const [customerForm, setCustomerForm] = useState<Partial<Customer>>({
     name: "",
@@ -105,6 +159,8 @@ export default function App() {
   const [adjustQty, setAdjustQty] = useState("");
   const [saleCustomer, setSaleCustomer] = useState(""),
     [saleDate, setSaleDate] = useState(""),
+    [saleDue, setSaleDue] = useState(""),
+    [proformaValidUntil, setProformaValidUntil] = useState(""),
     [salePlace, setSalePlace] = useState(""),
     [saleDiscount, setSaleDiscount] = useState(""),
     [salePaid, setSalePaid] = useState(""),
@@ -113,27 +169,24 @@ export default function App() {
       [],
     );
   const fileRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    localStorage.setItem("bw-products", JSON.stringify(products));
-    localStorage.setItem("bw-prices-include-gst", "true");
-  }, [products]);
-  useEffect(() => {
-    localStorage.setItem("bw-customers", JSON.stringify(customers));
-  }, [customers]);
-  useEffect(() => {
-    localStorage.setItem("bw-sales", JSON.stringify(sales));
-  }, [sales]);
-  useEffect(() => {
-    localStorage.setItem("bw-business", JSON.stringify(business));
-  }, [business]);
   const notify = (s: string) => {
     setToast(s);
     window.setTimeout(() => setToast(""), 2600);
+  };
+  const notifyError = (message: string) => {
+    setToast("");
+    setErrorPopup(message);
   };
   const nav = [
     ["Overview", LayoutDashboard],
     ["New sale", ShoppingCart],
     ["Sales invoices", ReceiptText],
+    ["Proforma invoices", FileText],
+    ["Purchases", Truck],
+    ["Sales returns", RotateCcw],
+    ["Expenses & cashbook", Wallet],
+    ["Payment reminders", BellRing],
+    ["Supplier payments", IndianRupee],
     ["Products", Package],
     ["Customers", Users],
     ["Inventory", Warehouse],
@@ -156,107 +209,89 @@ export default function App() {
       .includes(query.toLowerCase()),
   );
   const currentCustomer = customers.find((c) => c.id === saleCustomer);
-  const productStockCount = products.reduce((sum, product) => sum + product.stock, 0);
-  const productRetailValue = products.reduce(
-    (sum, product) => sum + product.price * product.stock,
-    0,
+  const salesAfterReturns = useMemo(
+    () =>
+      sales.map((sale) => {
+        const net = getSaleBalance(sale, returns);
+        const status: Sale["status"] =
+          net.balance === 0
+            ? "Paid"
+            : net.paid > 0
+              ? "Part-paid"
+              : "Unpaid";
+        const returnedQuantities = new Map<string, number>();
+        returns
+          .filter((entry) => entry.saleId === sale.id)
+          .flatMap((entry) => entry.lines)
+          .forEach((line) =>
+            returnedQuantities.set(
+              line.productId,
+              (returnedQuantities.get(line.productId) ?? 0) + line.qty,
+            ),
+          );
+        const lines = sale.lines.map((line) => {
+          const remainingReturn = returnedQuantities.get(line.productId) ?? 0;
+          const returnedFromLine = Math.min(line.qty, remainingReturn);
+          returnedQuantities.set(
+            line.productId,
+            Math.max(0, remainingReturn - returnedFromLine),
+          );
+          return { ...line, qty: line.qty - returnedFromLine };
+        });
+        return {
+          ...sale,
+          total: net.total,
+          paid: net.paid,
+          status,
+          lines,
+        };
+      }),
+    [sales, returns],
   );
-  const productLowStockCount = products.filter(
-    (product) => product.stock <= product.minStock,
-  ).length;
-  const saleSupply: Sale["supply"] =
-    business.state.trim() &&
-    salePlace.trim() &&
-    business.state.trim().toLowerCase() === salePlace.trim().toLowerCase()
-      ? "Intra-state"
-      : "Inter-state";
-  const computed = useMemo(() => {
-    const lines = saleLines
-      .map((l) => {
-        const p = products.find((p) => p.id === l.productId);
-        return p
-          ? {
-              productId: p.id,
-              name: p.name,
-              hsn: p.hsn,
-              qty: Math.max(0, Number(l.qty) || 0),
-              rate: p.price,
-              gst: p.gst,
-              cost: p.cost,
-              amount: p.price * Math.max(0, Number(l.qty) || 0),
-            }
-          : null;
-      })
-      .filter(Boolean) as (SaleLine & { amount: number })[];
-    return {
-      lines,
-      ...calculateSaleTotals(
-        lines,
-        Number(saleDiscount) || 0,
-        saleSupply,
-      ),
-    };
-  }, [saleLines, products, saleDiscount, saleSupply]);
-  const revenue = sales.reduce((a, s) => a + s.total, 0),
-    received = sales.reduce((a, s) => a + s.paid, 0),
-    outstanding = sales.reduce((a, s) => a + Math.max(0, s.total - s.paid), 0),
-    lowStock = products.filter((p) => p.stock <= p.minStock);
-  const todaySales = sales.filter((sale) => sale.date === today());
-  const todayRevenue = todaySales.reduce((sum, sale) => sum + sale.total, 0);
-  const todayGrossProfit = todaySales.reduce(
-    (sum, sale) =>
-      sum +
-      sale.lines.reduce(
-        (lineProfit, line) =>
-          lineProfit +
-          (line.rate / (1 + line.gst / 100) *
-            (1 - Math.min(100, Math.max(0, sale.discount)) / 100) -
-            line.cost) *
-            line.qty,
-        0,
-      ),
-    0,
+  const {
+    stockCount: productStockCount,
+    stockCostValue: productStockCostValue,
+    retailValue: productRetailValue,
+    lowStockProducts: lowStock,
+    lowStockCount: productLowStockCount,
+  } =
+    getInventoryMetrics(products);
+  const expiryCutoff = new Date(`${today()}T00:00:00`);
+  expiryCutoff.setDate(expiryCutoff.getDate() + 30);
+  const expiringBatches = products.flatMap((product) =>
+    (product.batches ?? [])
+      .filter(
+        (batch) =>
+          batch.quantity > 0 &&
+          batch.expiryDate &&
+          batch.expiryDate <=
+            `${expiryCutoff.getFullYear()}-${String(expiryCutoff.getMonth() + 1).padStart(2, "0")}-${String(expiryCutoff.getDate()).padStart(2, "0")}`,
+      )
+      .map((batch) => ({ product, batch })),
   );
-  const paymentFollowUp = sales
-    .filter((sale) => sale.total > sale.paid)
-    .sort((a, b) => b.total - b.paid - (a.total - a.paid))[0];
-  const demandWindowEnd = today();
-  const demandWindowStartDate = new Date();
-  demandWindowStartDate.setDate(demandWindowStartDate.getDate() - 29);
-  const demandWindowStart = [
-    demandWindowStartDate.getFullYear(),
-    String(demandWindowStartDate.getMonth() + 1).padStart(2, "0"),
-    String(demandWindowStartDate.getDate()).padStart(2, "0"),
-  ].join("-");
-  const recentUnitsSold = new Map<string, number>();
-  for (const sale of sales) {
-    if (sale.date < demandWindowStart || sale.date > demandWindowEnd) continue;
-    for (const line of sale.lines) {
-      recentUnitsSold.set(
-        line.productId,
-        (recentUnitsSold.get(line.productId) ?? 0) + line.qty,
-      );
-    }
-  }
-  const restockRecommendations = products
-    .map((product) => {
-      const unitsSold = recentUnitsSold.get(product.id) ?? 0;
-      const targetStock = Math.max(Math.ceil(unitsSold), product.minStock);
-      const suggestedQuantity = Math.max(0, targetStock - product.stock);
-      return {
-        product,
-        unitsSold,
-        targetStock,
-        suggestedQuantity,
-        daysOfStock: unitsSold > 0 ? (product.stock / unitsSold) * 30 : Infinity,
-      };
-    })
-    .filter((item) => item.suggestedQuantity > 0)
-    .sort((a, b) => a.daysOfStock - b.daysOfStock)
-    .slice(0, 5);
+  const saleSupply = getSaleSupply(business.state, salePlace);
+  const computed = useMemo(
+    () => buildSalePreview(saleLines, products, saleDiscount, saleSupply),
+    [saleLines, products, saleDiscount, saleSupply],
+  );
+  const {
+    revenue,
+    received,
+    outstanding,
+    unitsSold,
+    todaySales,
+    todayRevenue,
+    todayGrossProfit,
+    paymentFollowUp,
+  } =
+    getSalesMetrics(salesAfterReturns, today());
+  const customerInsights = getCustomerInsights(customers, salesAfterReturns, today());
+  const basketAffinities = getBasketAffinities(products, salesAfterReturns);
+  const restockRecommendations = getRestockRecommendations(products, salesAfterReturns, today());
   const resetSaleForm = () => {
     setSaleCustomer("");
     setSaleDate("");
+    setSaleDue("");
     setSalePlace("");
     setSaleDiscount("");
     setSalePaid("");
@@ -264,8 +299,15 @@ export default function App() {
     setSaleLines([]);
   };
   const startSale = () => {
+    setViewProforma(null);
     setSaleCustomer(customers[0]?.id || "");
-    setSaleDate(today());
+    const issueDate = today();
+    const due = new Date(`${issueDate}T00:00:00`);
+    due.setDate(due.getDate() + 30);
+    setSaleDate(issueDate);
+    setSaleDue(
+      `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")}`,
+    );
     setSalePlace(customers[0]?.state || "");
     setSaleDiscount("");
     setSalePaid("");
@@ -276,95 +318,212 @@ export default function App() {
     setTab("New sale");
     setShowSale(true);
   };
-  const saveSale = () => {
-    if (!business.name.trim() || !business.state.trim()) {
-      notify("Enter your business name and state in Settings before creating an invoice.");
+  const startProforma = () => {
+    setViewSale(null);
+    setViewProforma(null);
+    const date = today();
+    const expiry = new Date(`${date}T00:00:00`);
+    expiry.setDate(expiry.getDate() + 30);
+    setSaleCustomer(customers[0]?.id || "");
+    setSaleDate(date);
+    setProformaValidUntil(
+      `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`,
+    );
+    setSalePlace(customers[0]?.state || "");
+    setSaleDiscount("");
+    setSalePaid("");
+    setSaleNotes("");
+    setSaleLines(products.length ? [{ productId: products[0].id, qty: 1 }] : []);
+    setTab("New proforma");
+    setQuery("");
+  };
+  const startPairSale = (productIds: string[]) => {
+    const availableProducts = productIds.filter((productId) =>
+      products.some((product) => product.id === productId && product.stock > 0),
+    );
+    if (availableProducts.length !== productIds.length) {
+      notifyError("One of these products is out of stock. Review the pair before billing.");
       return;
     }
-    if (!saleDate || !salePlace.trim()) {
-      notify("Enter the invoice date and place of supply.");
-      return;
-    }
-    if (!saleCustomer || !computed.lines.length) {
-      notify("Select a customer and add at least one item.");
-      return;
-    }
-    const requestedQuantities = saleQuantitiesByProduct(computed.lines);
-    for (const [productId, quantity] of requestedQuantities) {
-      const product = products.find((item) => item.id === productId);
-      if (
-        !product ||
-        !Number.isFinite(quantity) ||
-        quantity <= 0 ||
-        quantity > product.stock
-      ) {
-        notify(
-          `Not enough stock for ${product?.name ?? "a selected product"}. Available: ${product?.stock ?? 0}; requested: ${quantity}.`,
-        );
-        return;
-      }
-    }
-    const c = customers.find((c) => c.id === saleCustomer)!;
-    const paid = Math.min(computed.total, Math.max(0, Number(salePaid) || 0));
-    const number = business.prefix + String(sales.length + 1).padStart(4, "0");
-    const sale: Sale = {
-      id: id(),
-      number,
+    setSaleCustomer("");
+    const issueDate = today();
+    const due = new Date(`${issueDate}T00:00:00`);
+    due.setDate(due.getDate() + 30);
+    setSaleDate(issueDate);
+    setSaleDue(
+      `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")}`,
+    );
+    setSalePlace("");
+    setSaleDiscount("");
+    setSalePaid("");
+    setSaleNotes("");
+    setSaleLines(availableProducts.map((productId) => ({ productId, qty: 1 })));
+    setTab("New sale");
+    setQuery("");
+    setShowSale(true);
+  };
+  const saveSale = (acceptMarginWarning = false) => {
+    const result = createSale({
+      business,
+      sales,
+      products,
+      customer: customers.find((customer) => customer.id === saleCustomer),
       date: saleDate,
-      due: "",
-      customerId: c.id,
-      customerName: c.name,
-      customerGstin: c.gstin,
+      due: saleDue,
       place: salePlace,
       supply: saleSupply,
       lines: computed.lines,
-      discount: computed.discount,
-      discountAmount: computed.discountAmount,
-      subtotal: computed.subtotal,
-      taxableSubtotal: computed.taxableSubtotal,
-      tax: computed.tax,
-      cgst: computed.cgst,
-      sgst: computed.sgst,
-      igst: computed.igst,
-      roundingAdjustment: computed.roundingAdjustment,
-      total: computed.total,
-      paid,
-      status:
-        paid >= computed.total ? "Paid" : paid > 0 ? "Part-paid" : "Unpaid",
+      totals: computed,
+      paid: Number(salePaid),
       notes: saleNotes,
-      pricesIncludeGst: true,
-    };
-    setSales((v) => [sale, ...v]);
-    setProducts((v) => updateStockForSale(v, computed.lines, -1));
+    });
+    if (!result.ok) {
+      notifyError(result.message);
+      return;
+    }
+    const warnings = result.sale.lines.flatMap((line) => {
+      if (line.cost <= 0) return [];
+      const netRate = line.rate / (1 + line.gst / 100);
+      const margin = ((netRate - line.cost) / line.cost) * 100;
+      const minimum = products.find((product) => product.id === line.productId)
+        ?.minMarginPct ?? 0;
+      return margin < 0 || (minimum > 0 && margin < minimum)
+        ? [`${line.name}: ${margin.toFixed(1)}% margin${margin < 0 ? " (below cost)" : `; minimum is ${minimum}%`}`]
+        : [];
+    });
+    if (warnings.length && !acceptMarginWarning) {
+      setMarginWarnings([...new Set(warnings)]);
+      return;
+    }
+    setSales((currentSales) => [result.sale, ...currentSales]);
+    if (result.sale.paid > 0) {
+      setSalePayments((current) => [
+        ...current,
+      { id: id(), saleId: result.sale.id, date: saleDate, amount: result.sale.paid },
+      ]);
+    }
+    setProducts(result.products);
     resetSaleForm();
     setShowSale(false);
     setTab("Sales invoices");
     setQuery("");
-    notify(`Invoice ${number} created and stock updated.`);
+    notify(`Invoice ${result.sale.number} created and stock updated.`);
+  };
+  const saveProforma = () => {
+    const result = createProforma({
+      business,
+      proformas,
+      customer: customers.find((customer) => customer.id === saleCustomer),
+      date: saleDate,
+      validUntil: proformaValidUntil,
+      place: salePlace,
+      supply: saleSupply,
+      lines: computed.lines,
+      discount: Number(saleDiscount) || 0,
+      notes: saleNotes,
+    });
+    if (!result.ok) {
+      notifyError(result.message);
+      return;
+    }
+    setProformas((current) => [result.proforma, ...current]);
+    setViewProforma(result.proforma);
+    setTab("Proforma invoices");
+    notify(`Proforma ${result.proforma.number} saved. Stock was not changed.`);
+  };
+  const convertProforma = (proforma: Proforma) => {
+    if (proforma.status === "Converted") {
+      notifyError("This proforma has already been converted.");
+      return;
+    }
+    const issueDate = today();
+    const due = new Date(`${issueDate}T00:00:00`);
+    due.setDate(due.getDate() + 30);
+    const dueDate = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")}`;
+    const result = createSale({
+      business,
+      sales,
+      products,
+      customer: customers.find((customer) => customer.id === proforma.customerId),
+      date: issueDate,
+      due: dueDate,
+      place: proforma.place,
+      supply: proforma.supply,
+      lines: proforma.lines,
+      totals: calculateSaleTotals(
+        proforma.lines,
+        proforma.discount,
+        proforma.supply,
+      ),
+      paid: 0,
+      notes: proforma.notes,
+    });
+    if (!result.ok) {
+      notifyError(result.message);
+      return;
+    }
+    setSales((current) => [result.sale, ...current]);
+    setProducts(result.products);
+    setProformas((current) =>
+      current.map((item) =>
+        item.id === proforma.id
+          ? { ...item, status: "Converted", convertedSaleId: result.sale.id }
+          : item,
+      ),
+    );
+    setViewProforma(null);
+    setTab("Sales invoices");
+    notify(`${proforma.number} converted to invoice ${result.sale.number}.`);
   };
   const recordPayment = (s: Sale) => {
-    const amt = Number(
-      window.prompt(
-        `Outstanding: ${fmt(Math.max(0, s.total - s.paid))}\nEnter payment received (₹):`,
-        String(Math.max(0, s.total - s.paid)),
-      ),
+    const amt = Number(paymentAmount);
+    const balance = getSaleBalance(s, returns).balance;
+    if (!Number.isFinite(amt) || amt <= 0 || amt > balance) {
+      notifyError(`Enter a payment greater than zero and no more than ${fmt(balance)}.`);
+      return;
+    }
+    const updatedSale = recordSalePayment(s, amt);
+    const netBalance = Math.max(
+      0,
+      getSaleBalance(s, returns).balance - amt,
     );
-    if (!Number.isFinite(amt) || amt <= 0) return;
-    setSales((v) =>
-      v.map((x) =>
-        x.id === s.id
-          ? {
-              ...x,
-              paid: Math.min(x.total, x.paid + amt),
-              status:
-                Math.min(x.total, x.paid + amt) >= x.total
-                  ? "Paid"
-                  : "Part-paid",
-            }
-          : x,
-      ),
+    updatedSale.status =
+      netBalance === 0 ? "Paid" : updatedSale.paid > 0 ? "Part-paid" : "Unpaid";
+    setSalePayments((current) => [
+      ...current,
+      { id: id(), saleId: s.id, date: today(), amount: amt },
+    ]);
+    setSales((currentSales) =>
+      currentSales.map((sale) => (sale.id === s.id ? updatedSale : sale)),
     );
+    setViewSale((currentSale) =>
+      currentSale?.id === s.id ? updatedSale : currentSale,
+    );
+    setPaymentSale(null);
+    setPaymentAmount("");
     notify("Payment recorded.");
+  };
+  const recordReturn = (
+    entry: SalesReturn,
+    updatedProducts: Product[],
+  ) => {
+    setReturns((current) => [entry, ...current]);
+    setProducts(updatedProducts);
+    notify(`Return ${entry.number} recorded and stock updated.`);
+  };
+  const updateFollowUp = (
+    sale: Sale,
+    followUpStatus: NonNullable<Sale["followUpStatus"]>,
+  ) => {
+    setSales((current) =>
+      current.map((item) =>
+        item.id === sale.id ? { ...item, followUpStatus } : item,
+      ),
+    );
+  };
+  const beginPayment = (sale: Sale) => {
+    setPaymentSale(sale);
+    setPaymentAmount(String(getSaleBalance(sale, returns).balance));
   };
   const deleteSale = (s: Sale) => {
     if (
@@ -374,7 +533,9 @@ export default function App() {
     )
       return;
     setSales((v) => v.filter((x) => x.id !== s.id));
-    setProducts((v) => updateStockForSale(v, s.lines, 1));
+    setProducts((currentProducts) =>
+      restoreStockForDeletedSale(currentProducts, s),
+    );
     setViewSale(null);
     notify("Invoice deleted and stock restored.");
   };
@@ -387,67 +548,27 @@ export default function App() {
       unit: "",
       gst: 18,
     });
+    setProductNumbers({ cost: "", price: "", stock: "", minStock: "" });
     setShowProduct(true);
   };
   const saveProduct = () => {
-    if (!productForm.name?.trim() || !productForm.sku?.trim()) {
-      notify("Product name and SKU are required.");
-      return;
-    }
-    if (
-      products.some(
-        (p) => p.sku.toLowerCase() === productForm.sku!.toLowerCase(),
-      )
-    ) {
-      notify("SKU already exists. Use a unique SKU.");
-      return;
-    }
-    const barcode = productForm.barcode?.trim() || "";
-    if (
-      barcode &&
-      products.some(
-        (p) => p.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
-      )
-    ) {
-      notify("Barcode already exists. Use a unique barcode.");
-      return;
-    }
-    const gst = Number(productForm.gst ?? 0);
-    const price = Number(productForm.price ?? 0);
-    const cost = Number(productForm.cost ?? 0);
-    const openingStock = Number(productForm.stock ?? 0);
-    const minStock = Number(productForm.minStock ?? 0);
-    if (
-      !Number.isFinite(gst) ||
-      gst < 0 ||
-      !Number.isFinite(price) ||
-      price < 0 ||
-      !Number.isFinite(cost) ||
-      cost < 0 ||
-      !Number.isFinite(openingStock) ||
-      openingStock < 0 ||
-      !Number.isFinite(minStock) ||
-      minStock < 0
-    ) {
-      notify("Price, cost, opening stock, and threshold must be valid non-negative numbers.");
-      return;
-    }
-    setProducts((v) => [
+    const numberOrUndefined = (value: string) =>
+      value.trim() === "" ? undefined : Number(value);
+    const result = createProduct(
       {
-        id: id(),
-        name: productForm.name!.trim(),
-        sku: productForm.sku!.trim(),
-        barcode,
-        hsn: productForm.hsn || "",
-        unit: productForm.unit || "",
-        cost,
-        price,
-        gst,
-        stock: openingStock,
-        minStock,
+        ...productForm,
+        cost: numberOrUndefined(productNumbers.cost),
+        price: numberOrUndefined(productNumbers.price),
+        stock: numberOrUndefined(productNumbers.stock),
+        minStock: numberOrUndefined(productNumbers.minStock),
       },
-      ...v,
-    ]);
+      products,
+    );
+    if (!result.ok) {
+      notifyError(result.message);
+      return;
+    }
+    setProducts((currentProducts) => [result.value, ...currentProducts]);
     setShowProduct(false);
     setProductForm({
       name: "",
@@ -457,59 +578,55 @@ export default function App() {
       unit: "",
       gst: 18,
     });
+    setProductNumbers({ cost: "", price: "", stock: "", minStock: "" });
     notify("Product added.");
   };
   const addProductToSale = (product: Product) => {
-    const currentQty = saleLines.reduce(
-      (quantity, line) =>
-        line.productId === product.id ? quantity + line.qty : quantity,
-      0,
-    );
-    if (currentQty >= product.stock) {
-      notify(`No more stock available for ${product.name}.`);
+    const result = addProductQuantity(saleLines, product);
+    if (!result.ok) {
+      notifyError(result.message);
       return;
     }
-    setSaleLines((lines) => {
-      const existing = lines.find((line) => line.productId === product.id);
+    setSaleLines(result.lines);
+    notify(`${product.name} added to sale.`);
+  };
+  const addProductToProforma = (product: Product) => {
+    setSaleLines((current) => {
+      const existing = current.find((line) => line.productId === product.id);
       return existing
-        ? lines.map((line) =>
+        ? current.map((line) =>
             line.productId === product.id
               ? { ...line, qty: line.qty + 1 }
               : line,
           )
-        : [...lines, { productId: product.id, qty: 1 }];
+        : [...current, { productId: product.id, qty: 1 }];
     });
-    notify(`${product.name} added to sale.`);
   };
   const scanProductIntoSale = (scannedCode: string) => {
-    const code = scannedCode.trim().toLowerCase();
-    if (!code) return;
-    const product =
-      products.find((item) => item.barcode?.trim().toLowerCase() === code) ??
-      products.find((item) => item.sku.trim().toLowerCase() === code);
+    if (!scannedCode.trim()) return;
+    const product = findProductByScan(products, scannedCode);
     if (!product) {
-      notify(`No product found for barcode "${scannedCode.trim()}".`);
+      notifyError(`No product found for barcode "${scannedCode.trim()}".`);
       return;
     }
     addProductToSale(product);
   };
-  const saveCustomer = () => {
-    if (!customerForm.name?.trim()) {
-      notify("Customer name is required.");
+  const scanProductIntoProforma = (scannedCode: string) => {
+    if (!scannedCode.trim()) return;
+    const product = findProductByScan(products, scannedCode);
+    if (!product) {
+      notifyError(`No product found for barcode "${scannedCode.trim()}".`);
       return;
     }
-    setCustomers((v) => [
-      {
-        id: id(),
-        name: customerForm.name!.trim(),
-        gstin: customerForm.gstin || "",
-        phone: customerForm.phone || "",
-        email: customerForm.email || "",
-        address: customerForm.address || "",
-        state: customerForm.state || "",
-      },
-      ...v,
-    ]);
+    addProductToProforma(product);
+  };
+  const saveCustomer = () => {
+    const result = createCustomer(customerForm);
+    if (!result.ok) {
+      notifyError(result.message);
+      return;
+    }
+    setCustomers((currentCustomers) => [result.value, ...currentCustomers]);
     setShowCustomer(false);
     setCustomerForm({
       name: "",
@@ -522,11 +639,20 @@ export default function App() {
     notify("Customer added.");
   };
   const addLine = () => {
-    const p = products.find(
-      (p) => p.stock > 0 && !saleLines.some((l) => l.productId === p.id),
-    );
+    if (tab === "New proforma") {
+      const product = products.find(
+        (item) => !saleLines.some((line) => line.productId === item.id),
+      );
+      if (!product) {
+        notifyError("No additional products available.");
+        return;
+      }
+      setSaleLines((current) => [...current, { productId: product.id, qty: 1 }]);
+      return;
+    }
+    const p = getNextAvailableSaleProduct(products, saleLines);
     if (!p) {
-      notify("No additional in-stock products available.");
+      notifyError("No additional in-stock products available.");
       return;
     }
     setSaleLines((v) => [...v, { productId: p.id, qty: 1 }]);
@@ -552,10 +678,14 @@ export default function App() {
               s.customerName,
               s.subtotal.toFixed(2),
               s.tax.toFixed(2),
-              s.total.toFixed(2),
-              s.paid.toFixed(2),
-              (s.total - s.paid).toFixed(2),
-              s.status,
+              getSaleBalance(s, returns).total.toFixed(2),
+              getSaleBalance(s, returns).paid.toFixed(2),
+              getSaleBalance(s, returns).balance.toFixed(2),
+              getSaleBalance(s, returns).balance === 0
+                ? "Paid"
+                : getSaleBalance(s, returns).paid > 0
+                  ? "Part-paid"
+                  : "Unpaid",
             ]),
           ]
         : [
@@ -566,6 +696,7 @@ export default function App() {
               "HSN/SAC",
               "Cost",
               "Selling price (incl. GST)",
+              "Minimum margin %",
               "GST %",
               "Stock",
               "Low stock threshold",
@@ -577,6 +708,7 @@ export default function App() {
               p.hsn,
               p.cost,
               p.price,
+              p.minMarginPct ?? 0,
               p.gst,
               p.stock,
               p.minStock,
@@ -595,6 +727,22 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
   };
+  const reportData = buildReportData(business, products, salesAfterReturns);
+  const reportInvoices = reportData.invoices;
+  const reportProducts = reportData.products;
+  const hasReportData = reportInvoices.length > 0 || reportProducts.length > 0;
+  const topProductsBySales = reportProducts
+    .filter((product) => product.unitsSold > 0)
+    .slice(0, 8);
+  const downloadReportCSV = () => {
+    if (hasReportData) exportReportCsv(reportData);
+  };
+  const downloadReportExcel = () => {
+    if (hasReportData) exportReportExcel(reportData);
+  };
+  const downloadReportPDF = () => {
+    if (hasReportData) void exportReportPdf(reportData);
+  };
   const backup = () => {
     const blob = new Blob(
       [
@@ -604,7 +752,13 @@ export default function App() {
             products,
             customers,
             sales,
-            version: 2,
+            proformas,
+            purchases,
+            returns,
+            expenses,
+            supplierPayments,
+            salePayments,
+            version: 4,
             pricesIncludeGst: true,
           },
           null,
@@ -626,29 +780,21 @@ export default function App() {
     const r = new FileReader();
     r.onload = () => {
       try {
-        const d = JSON.parse(String(r.result));
-        if (
-          !Array.isArray(d.products) ||
-          !Array.isArray(d.customers) ||
-          !Array.isArray(d.sales)
-        )
-          throw new Error("Invalid backup");
+        const d = parseBusinessBackup(String(r.result), business);
         if (!window.confirm("Import backup and replace current data?")) return;
-        setBusiness(d.business || business);
-        setProducts(
-          d.products.map((product: Product) => ({
-            ...product,
-            price:
-              d.pricesIncludeGst === true
-                ? product.price
-                : priceWithGst(product.price, product.gst),
-          })),
-        );
+        setBusiness(d.business);
+        setProducts(d.products);
         setCustomers(d.customers);
         setSales(d.sales);
+        setProformas(d.proformas);
+        setPurchases(d.purchases);
+        setReturns(d.returns);
+        setExpenses(d.expenses);
+        setSupplierPayments(d.supplierPayments);
+        setSalePayments(d.salePayments);
         notify("Backup imported.");
       } catch {
-        notify("Could not import this file. Choose a Billwise JSON backup.");
+        notifyError("Could not import this file. Choose a Billwise JSON backup.");
       }
     };
     r.readAsText(file);
@@ -662,11 +808,25 @@ export default function App() {
       document.title = origTitle;
     }, 150);
   };
+  const printProforma = (proforma: Proforma) => {
+    setViewProforma(proforma);
+    const origTitle = document.title;
+    document.title = `Proforma_${proforma.number}`;
+    window.setTimeout(() => {
+      window.print();
+      document.title = origTitle;
+    }, 150);
+  };
   const statusClass = (s: string) => s.toLowerCase().replace("-", "");
   const openTab = (t: Tab) => {
     if (t === "New sale") {
       startSale();
       setQuery("");
+      setMobile(false);
+      return;
+    }
+    if (t === "New proforma") {
+      startProforma();
       setMobile(false);
       return;
     }
@@ -744,7 +904,7 @@ export default function App() {
           </div>
           <div className="top-right">
             <div className="online">
-              <i /> Offline-ready
+              <i /> Local data
             </div>
             <button
               className="top-icon"
@@ -1017,19 +1177,27 @@ export default function App() {
               </div>
             </>
           )}
-          {tab === "New sale" && (
+          {(tab === "New sale" || tab === "New proforma") && (
             <>
               <div className="page-title-row">
                 <div>
                   <div className="eyebrow">BILLING WORKSPACE</div>
                   <h1>
-                    Create a sale<span>.</span>
+                    {tab === "New proforma" ? "Create a proforma" : "Create a sale"}<span>.</span>
                   </h1>
-                  <p>Add items, confirm tax, and record payment.</p>
+                  <p>
+                    {tab === "New proforma"
+                      ? "Prepare an estimate without changing stock."
+                      : "Add items, confirm tax, and record payment."}
+                  </p>
                 </div>
                 <button
                   className="btn light"
-                  onClick={() => openTab("Sales invoices")}
+                  onClick={() =>
+                    openTab(
+                      tab === "New proforma" ? "Proforma invoices" : "Sales invoices",
+                    )
+                  }
                 >
                   Cancel
                 </button>
@@ -1041,6 +1209,8 @@ export default function App() {
                 setSaleCustomer={setSaleCustomer}
                 saleDate={saleDate}
                 setSaleDate={setSaleDate}
+                saleDue={saleDue}
+                setSaleDue={setSaleDue}
                 saleSupply={saleSupply}
                 salePlace={salePlace}
                 setSalePlace={setSalePlace}
@@ -1050,18 +1220,160 @@ export default function App() {
                 setSalePaid={setSalePaid}
                 saleNotes={saleNotes}
                 setSaleNotes={setSaleNotes}
+                isProforma={tab === "New proforma"}
+                validUntil={proformaValidUntil}
+                setValidUntil={setProformaValidUntil}
                 saleLines={saleLines}
                 setSaleLines={setSaleLines}
                 computed={computed}
                 onAddLine={addLine}
                 onAddProductManually={(productId: string) => {
                   const product = products.find((item) => item.id === productId);
-                  if (product) addProductToSale(product);
+                  if (product) {
+                    if (tab === "New proforma") addProductToProforma(product);
+                    else addProductToSale(product);
+                  }
                 }}
-                onScanBarcode={scanProductIntoSale}
-                onSave={saveSale}
+                onScanBarcode={
+                  tab === "New proforma"
+                    ? scanProductIntoProforma
+                    : scanProductIntoSale
+                }
+                onSave={tab === "New proforma" ? saveProforma : () => saveSale()}
               />
             </>
+          )}
+          {tab === "Proforma invoices" && (
+            <>
+              <PageHead
+                title="Proforma invoices"
+                subtitle="Create estimates, share them with customers, and convert accepted quotes into sales."
+                action={
+                  <button className="btn primary" onClick={startProforma}>
+                    <Plus size={16} /> New proforma
+                  </button>
+                }
+              />
+              <div className="panel">
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>PROFORMA</th>
+                        <th>CUSTOMER</th>
+                        <th>DATE</th>
+                        <th>VALID UNTIL</th>
+                        <th>TOTAL</th>
+                        <th>STATUS</th>
+                        <th>ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proformas.map((proforma) => (
+                        <tr key={proforma.id}>
+                          <td className="link-cell">{proforma.number}</td>
+                          <td>{proforma.customerName}</td>
+                          <td>{dateLabel(proforma.date)}</td>
+                          <td>{dateLabel(proforma.validUntil)}</td>
+                          <td className="strong">{fmt(proforma.total)}</td>
+                          <td><Status status={proforma.status} /></td>
+                          <td>
+                            <div className="row-actions">
+                              <button
+                                title="View proforma"
+                                onClick={() => setViewProforma(proforma)}
+                              >
+                                <Eye size={15} />
+                              </button>
+                              <button
+                                title="Print proforma"
+                                onClick={() => printProforma(proforma)}
+                              >
+                                <Printer size={15} />
+                              </button>
+                              {proforma.status === "Open" && (
+                                <button
+                                  title="Convert to sale and deduct stock"
+                                  onClick={() => convertProforma(proforma)}
+                                >
+                                  <ShoppingCart size={15} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {proformas.length === 0 && (
+                    <Empty
+                      icon={<FileText />}
+                      title="No proforma invoices yet"
+                      text="Create a proforma estimate without reserving or reducing stock."
+                      action="Create a proforma"
+                      onAction={startProforma}
+                    />
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          {tab === "Purchases" && (
+            <PurchaseEntryPage
+              products={products}
+              purchases={purchases}
+              onError={notifyError}
+              onSave={(entry, updatedProducts) => {
+                setPurchases((current) => [entry, ...current]);
+                setProducts(updatedProducts);
+                notify(
+                  `Purchase ${entry.number} recorded. Stock and product costs updated.`,
+                );
+              }}
+            />
+          )}
+          {tab === "Sales returns" && (
+            <SalesReturnsPage
+              sales={sales}
+              returns={returns}
+              products={products}
+              onError={notifyError}
+              onSave={recordReturn}
+            />
+          )}
+          {tab === "Expenses & cashbook" && (
+            <ExpensesCashbookPage
+              expenses={expenses}
+              sales={sales}
+              salePayments={salePayments}
+              returns={returns}
+              supplierPayments={supplierPayments}
+              purchases={purchases}
+              onError={notifyError}
+              onSave={(expense: Expense) => {
+                setExpenses((current) => [expense, ...current]);
+                notify("Expense recorded.");
+              }}
+            />
+          )}
+          {tab === "Payment reminders" && (
+            <PaymentRemindersPage
+              sales={sales}
+              returns={returns}
+              onStatusChange={updateFollowUp}
+              onError={notifyError}
+            />
+          )}
+          {tab === "Supplier payments" && (
+            <SupplierPaymentsPage
+              purchases={purchases}
+              payments={supplierPayments}
+              onError={notifyError}
+              onSave={(payment: SupplierPayment) => {
+                setSupplierPayments((current) => [payment, ...current]);
+                notify("Supplier payment recorded.");
+              }}
+            />
           )}
           {tab === "Sales invoices" && (
             <>
@@ -1106,16 +1418,24 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {invoiceMatches.map((s) => (
+                      {invoiceMatches.map((s) => {
+                        const balance = getSaleBalance(s, returns);
+                        const effectiveStatus =
+                          balance.balance === 0
+                            ? "Paid"
+                            : balance.paid > 0
+                              ? "Part-paid"
+                              : "Unpaid";
+                        return (
                         <tr key={s.id}>
                           <td className="link-cell">{s.number}</td>
                           <td>{s.customerName}</td>
                           <td>{dateLabel(s.date)}</td>
-                          <td className="strong">{fmt(s.total)}</td>
-                          <td>{fmt(s.paid)}</td>
-                          <td>{fmt(Math.max(0, s.total - s.paid))}</td>
+                          <td className="strong">{fmt(getSaleBalance(s, returns).total)}</td>
+                          <td>{fmt(getSaleBalance(s, returns).paid)}</td>
+                          <td>{fmt(getSaleBalance(s, returns).balance)}</td>
                           <td>
-                            <Status status={s.status} />
+                            <Status status={effectiveStatus} />
                           </td>
                           <td>
                             <div className="row-actions">
@@ -1125,10 +1445,10 @@ export default function App() {
                               >
                                 <Eye size={15} />
                               </button>
-                              {s.paid < s.total && (
+                              {balance.balance > 0 && (
                                 <button
                                   title="Record payment"
-                                  onClick={() => recordPayment(s)}
+                                  onClick={() => beginPayment(s)}
                                 >
                                   <Wallet size={15} />
                                 </button>
@@ -1148,7 +1468,8 @@ export default function App() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                   {invoiceMatches.length === 0 && (
@@ -1252,6 +1573,7 @@ export default function App() {
                         <th>HSN/SAC</th>
                         <th>COST</th>
                         <th>SELLING PRICE (INCL. GST)</th>
+                        <th>MIN MARGIN</th>
                         <th>GST</th>
                         <th>STOCK</th>
                         <th></th>
@@ -1280,6 +1602,7 @@ export default function App() {
                               <b>{fmt(p.price)}</b>
                             </div>
                           </td>
+                          <td>{p.minMarginPct ? `${p.minMarginPct}%` : "Not set"}</td>
                           <td>
                             <span className="product-tax-badge">{p.gst}%</span>
                             <small className="product-tax-split">
@@ -1294,6 +1617,11 @@ export default function App() {
                             >
                               {p.stock} {p.unit}
                             </span>
+                            {(p.batches?.length ?? 0) > 0 && (
+                              <small className="product-tax-split">
+                                {p.batches?.filter((batch) => batch.quantity > 0).length} tracked lots
+                              </small>
+                            )}
                           </td>
                           <td>
                             <div className="row-actions">
@@ -1365,56 +1693,119 @@ export default function App() {
                   {customers.length} customers
                 </span>
               </div>
+              <div className="metric-grid customer-insight-metrics">
+                <Metric
+                  icon={<Users />}
+                  tone="blue"
+                  label="Customer lifetime value"
+                  value={fmt(customerInsights.lifetimeValue)}
+                  sub="Total billed across your customer list"
+                />
+                <Metric
+                  icon={<ReceiptText />}
+                  tone="purple"
+                  label="Repeat customers"
+                  value={String(customerInsights.repeatCustomerCount)}
+                  sub={`Of ${customers.length} saved customers`}
+                />
+                <Metric
+                  icon={<Wallet />}
+                  tone="orange"
+                  label="Overdue balances"
+                  value={fmt(customerInsights.overdueTotal)}
+                  sub="Unpaid invoices past their due date"
+                />
+              </div>
               <div className="customer-grid">
-                {customerMatches.map((c) => (
-                  <div className="panel customer-card" key={c.id}>
-                    <div className="customer-top">
-                      <div className="customer-avatar">
-                        {c.name
-                          .split(" ")
-                          .slice(0, 2)
-                          .map((x) => x[0])
-                          .join("")
-                          .toUpperCase()}
+                {customerMatches.map((c) => {
+                  const insight = customerInsights.byCustomerId.get(c.id);
+                  if (!insight) return null;
+                  return (
+                    <div className="panel customer-card" key={c.id}>
+                      <div className="customer-top">
+                        <div className="customer-avatar">
+                          {c.name
+                            .split(" ")
+                            .slice(0, 2)
+                            .map((x) => x[0])
+                            .join("")
+                            .toUpperCase()}
+                        </div>
+                        <div className="customer-actions">
+                          <span
+                            className={`customer-segment ${insight.segment.toLowerCase().replace(" ", "-")}`}
+                          >
+                            {insight.segment}
+                          </span>
+                          <button
+                            className="row-icon"
+                            onClick={() => {
+                              if (window.confirm(`Delete customer ${c.name}?`))
+                                setCustomers((v) => v.filter((x) => x.id !== c.id));
+                            }}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </div>
+                      <h3>{c.name}</h3>
+                      <p>{c.gstin || "Unregistered / GSTIN not provided"}</p>
+                      <div className="customer-meta">
+                        <span>
+                          <Users size={14} />
+                          {c.phone || "No phone"}
+                        </span>
+                        <span>
+                          <FileText size={14} />
+                          {insight.invoiceCount} invoices
+                        </span>
+                      </div>
+                      <div className="customer-address">
+                        {c.address || "No address provided"} · {c.state}
+                      </div>
+                      <div className="customer-insight-grid">
+                        <div>
+                          <span>Lifetime billed</span>
+                          <b>{fmt(insight.lifetimeValue)}</b>
+                        </div>
+                        <div>
+                          <span>Average invoice</span>
+                          <b>{fmt(insight.averageInvoiceValue)}</b>
+                        </div>
+                        <div className={insight.outstanding > 0 ? "has-balance" : ""}>
+                          <span>Outstanding</span>
+                          <b>{fmt(insight.outstanding)}</b>
+                        </div>
+                        <div>
+                          <span>Last purchase</span>
+                          <b>
+                            {insight.lastPurchase
+                              ? dateLabel(insight.lastPurchase)
+                              : "No invoices"}
+                          </b>
+                        </div>
+                      </div>
+                      {insight.overdue > 0 && (
+                        <button
+                          className="customer-overdue"
+                          onClick={() => setViewSale(insight.overdueInvoices[0])}
+                        >
+                          {fmt(insight.overdue)} overdue · Review oldest unpaid invoice
+                        </button>
+                      )}
                       <button
-                        className="row-icon"
+                        className="customer-bill"
                         onClick={() => {
-                          if (window.confirm(`Delete customer ${c.name}?`))
-                            setCustomers((v) => v.filter((x) => x.id !== c.id));
+                          setSaleCustomer(c.id);
+                          startSale();
+                          setSaleCustomer(c.id);
                         }}
                       >
-                        <Trash2 size={15} />
+                        <Plus size={14} /> Create sale for customer
                       </button>
                     </div>
-                    <h3>{c.name}</h3>
-                    <p>{c.gstin || "Unregistered / GSTIN not provided"}</p>
-                    <div className="customer-meta">
-                      <span>
-                        <Users size={14} />
-                        {c.phone || "No phone"}
-                      </span>
-                      <span>
-                        <FileText size={14} />
-                        {sales.filter((s) => s.customerId === c.id).length}{" "}
-                        invoices
-                      </span>
-                    </div>
-                    <div className="customer-address">
-                      {c.address || "No address provided"} · {c.state}
-                    </div>
-                    <button
-                      className="customer-bill"
-                      onClick={() => {
-                        setSaleCustomer(c.id);
-                        startSale();
-                        setSaleCustomer(c.id);
-                      }}
-                    >
-                      <Plus size={14} /> Create sale for customer
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               {customerMatches.length === 0 && (
                 <Empty
@@ -1449,7 +1840,7 @@ export default function App() {
                   icon={<Boxes />}
                   tone="purple"
                   label="Total units on hand"
-                  value={String(products.reduce((a, p) => a + p.stock, 0))}
+                  value={String(productStockCount)}
                   sub="Across all products"
                 />
                 <Metric
@@ -1463,21 +1854,49 @@ export default function App() {
                   icon={<IndianRupee />}
                   tone="green"
                   label="Stock cost value"
-                  value={fmt(
-                    products.reduce((a, p) => a + p.stock * p.cost, 0),
-                  )}
+                  value={fmt(productStockCostValue)}
                   sub="Estimated at cost"
                 />
                 <Metric
                   icon={<TrendingUp />}
                   tone="blue"
                   label="Retail value"
-                  value={fmt(
-                    products.reduce((a, p) => a + p.stock * p.price, 0),
-                  )}
+                  value={fmt(productRetailValue)}
                   sub="Estimated at selling price"
                 />
+                <Metric
+                  icon={<CalendarDays />}
+                  tone="orange"
+                  label="Expiring batches"
+                  value={String(expiringBatches.length)}
+                  sub="Expired or due in the next 30 days"
+                />
               </div>
+              {expiringBatches.length > 0 && (
+                <section className="panel expiry-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h2>Expiry watch</h2>
+                      <p>Batches with an expiry date within 30 days or already expired.</p>
+                    </div>
+                    <AlertTriangle size={18} />
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>PRODUCT</th><th>BATCH</th><th>EXPIRY</th><th>QTY LEFT</th><th>STATUS</th></tr></thead>
+                      <tbody>{expiringBatches.map(({ product, batch }) => (
+                        <tr key={batch.id}>
+                          <td>{product.name}</td>
+                          <td>{batch.code || "—"}</td>
+                          <td>{dateLabel(batch.expiryDate)}</td>
+                          <td>{batch.quantity} {product.unit}</td>
+                          <td><span className="stock-low">{batch.expiryDate < today() ? "Expired" : "Expiring soon"}</span></td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
               <section className="panel restock-panel">
                 <div className="panel-head">
                   <div>
@@ -1616,12 +2035,32 @@ export default function App() {
                 title="Sales reports"
                 subtitle="A quick view of sales, collections and product performance."
                 action={
-                  <button
-                    className="btn primary"
-                    onClick={() => exportCSV("sales")}
-                  >
-                    <Download size={15} /> Export sales CSV
-                  </button>
+                  <div className="report-export-actions">
+                    <button
+                      className="btn light"
+                      onClick={downloadReportPDF}
+                      disabled={!hasReportData}
+                      title={!hasReportData ? "Add sales or products before downloading a report." : undefined}
+                    >
+                      <FileText size={15} /> PDF
+                    </button>
+                    <button
+                      className="btn light"
+                      onClick={downloadReportExcel}
+                      disabled={!hasReportData}
+                      title={!hasReportData ? "Add sales or products before downloading a report." : undefined}
+                    >
+                      <FileSpreadsheet size={15} /> Excel
+                    </button>
+                    <button
+                      className="btn primary"
+                      onClick={downloadReportCSV}
+                      disabled={!hasReportData}
+                      title={!hasReportData ? "Add sales or products before downloading a report." : undefined}
+                    >
+                      <Download size={15} /> CSV
+                    </button>
+                  </div>
                 }
               />
               <div className="metric-grid">
@@ -1650,12 +2089,7 @@ export default function App() {
                   icon={<Package />}
                   tone="blue"
                   label="Units sold"
-                  value={String(
-                    sales.reduce(
-                      (a, s) => a + s.lines.reduce((b, l) => b + l.qty, 0),
-                      0,
-                    ),
-                  )}
+                  value={String(unitsSold)}
                   sub="Across all invoices"
                 />
               </div>
@@ -1700,27 +2134,107 @@ export default function App() {
                       <p>Quantity across all invoices</p>
                     </div>
                   </div>
-                  {products.map((p) => {
-                    const qty = sales.reduce(
-                      (a, s) =>
-                        a +
-                        s.lines
-                          .filter((l) => l.productId === p.id)
-                          .reduce((b, l) => b + l.qty, 0),
-                      0,
-                    );
-                    return (
-                      <div className="top-product" key={p.id}>
+                  {topProductsBySales.length > 0 ? (
+                    topProductsBySales.map((product) => (
+                      <div className="top-product" key={product.sku}>
                         <div className="product-symbol">
                           <Package size={15} />
                         </div>
-                        <span>{p.name}</span>
-                        <b>{qty} sold</b>
+                        <span>{product.name}</span>
+                        <b>{product.unitsSold} sold</b>
                       </div>
-                    );
-                  })}
+                    ))
+                  ) : (
+                    <div className="empty-lines">
+                      No products sold yet. Sales will appear here once invoices are created.
+                    </div>
+                  )}
                 </div>
               </div>
+              <section className="panel basket-dna-panel">
+                <div className="panel-head">
+                  <div>
+                    <span className="basket-dna-kicker">LOCAL RECEIPT PATTERNS</span>
+                    <h2>Basket DNA</h2>
+                    <p>
+                      Product pairs that show up together in real invoices—use
+                      the pattern to prompt a relevant add-on.
+                    </p>
+                  </div>
+                  <div className="basket-dna-symbol">
+                    <ShoppingCart size={19} />
+                  </div>
+                </div>
+                {basketAffinities.length ? (
+                  <div className="basket-pair-list">
+                    {basketAffinities.map((pair) => {
+                      const firstInStock =
+                        products.find((product) => product.id === pair.firstId)
+                          ?.stock ?? 0;
+                      const secondInStock =
+                        products.find((product) => product.id === pair.secondId)
+                          ?.stock ?? 0;
+                      const canStartSale = firstInStock > 0 && secondInStock > 0;
+                      return (
+                        <div
+                          className="basket-pair"
+                          key={`${pair.firstId}\u0000${pair.secondId}`}
+                        >
+                          <div className="basket-pair-products">
+                            <span>{pair.firstName}</span>
+                            <b>+</b>
+                            <span>{pair.secondName}</span>
+                          </div>
+                          <div className="basket-pair-insight">
+                            <b>{pair.affinity}%</b>
+                            <span>
+                              of {pair.anchorName} invoices also include{" "}
+                              {pair.otherName}
+                            </span>
+                            <small>
+                              Seen in {pair.invoiceCount} of{" "}
+                              {pair.anchorInvoiceCount} {pair.anchorName}{" "}
+                              {pair.anchorInvoiceCount === 1
+                                ? "invoice"
+                                : "invoices"}
+                            </small>
+                          </div>
+                          <button
+                            className="btn light basket-pair-action"
+                            disabled={!canStartSale}
+                            title={
+                              canStartSale
+                                ? "Start a sale with both products"
+                                : "Both products need stock to start a sale"
+                            }
+                            onClick={() =>
+                              startPairSale([pair.firstId, pair.secondId])
+                            }
+                          >
+                            <Plus size={14} /> Add both to sale
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="basket-dna-empty">
+                    <ShoppingCart size={18} />
+                    <div>
+                      <b>No product pair patterns yet</b>
+                      <p>
+                        When invoices contain multiple products, Billwise will
+                        surface the combinations customers choose together.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <p className="basket-dna-note">
+                  Based on invoice co-occurrence, not a guarantee of future
+                  demand. Each invoice counts a product once, even when its
+                  quantity is greater than one.
+                </p>
+              </section>
               <div className="panel report-footnote">
                 <AlertTriangle size={16} />
                 <p>
@@ -1787,8 +2301,7 @@ export default function App() {
                       />
                     </Field>
                     <Field label="Business address">
-                      <textarea
-                        rows={2}
+                      <input
                         value={business.address}
                         onChange={(e) =>
                           setBusiness({ ...business, address: e.target.value })
@@ -1804,12 +2317,26 @@ export default function App() {
                       />
                     </Field>
                     <Field label="State">
-                      <input
+                      <select
                         value={business.state}
                         onChange={(e) =>
                           setBusiness({ ...business, state: e.target.value })
-                        }
-                      />
+                        }>
+                        <option value="">Select state</option>
+                        {business.state &&
+                          !INDIAN_STATES.some(
+                            (state) => state === business.state,
+                          ) && (
+                            <option value={business.state}>
+                              {business.state}
+                            </option>
+                          )}
+                        {INDIAN_STATES.map((state) => (
+                          <option key={state} value={state}>
+                            {state}
+                          </option>
+                        ))}
+                      </select>
                     </Field>
                   </div>
                 </div>
@@ -1827,8 +2354,8 @@ export default function App() {
                     <div>
                       <b>Export backup</b>
                       <p>
-                        Download products, customers, invoices and business
-                        settings as a JSON file.
+                        Download all local records, including returns, expenses
+                        and payment tracking, as a JSON file.
                       </p>
                     </div>
                     <button className="btn light" onClick={backup}>
@@ -1867,7 +2394,7 @@ export default function App() {
                     <div>
                       <b>Clear all local data</b>
                       <p>
-                        Remove all invoices, products and customers from this
+                        Remove all business records and settings from this
                         browser.
                       </p>
                     </div>
@@ -1882,6 +2409,12 @@ export default function App() {
                           setProducts([]);
                           setCustomers([]);
                           setSales([]);
+                          setProformas([]);
+                          setPurchases([]);
+                          setReturns([]);
+                          setExpenses([]);
+                          setSupplierPayments([]);
+                          setSalePayments([]);
                           setBusiness(emptyBusiness);
                           notify("Local data cleared.");
                         }
@@ -1955,47 +2488,18 @@ export default function App() {
                 }
               />
             </Field>
-            <Field label="Unit">
-              <input
-                value={productForm.unit || ""}
-                onChange={(e) =>
-                  setProductForm({ ...productForm, unit: e.target.value })
-                }
-              />
-            </Field>
-            <Field label="Cost price (₹)">
-              <input
-                type="number"
-                min="0"
-                value={productForm.cost ?? ""}
-                onChange={(e) =>
-                  setProductForm({
-                    ...productForm,
-                    cost:
-                      e.target.value === "" ? undefined : Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
             <Field label="Selling price (₹)">
               <input
-                type="number"
-                min="0"
-                value={productForm.price ?? ""}
+                type="text"
+                inputMode="decimal"
+                value={productNumbers.price}
                 onChange={(e) =>
-                  setProductForm({
-                    ...productForm,
-                    price:
-                      e.target.value === "" ? undefined : Number(e.target.value),
-                  })
+                  setProductNumbers({ ...productNumbers, price: e.target.value })
                 }
               />
             </Field>
             <Field label="GST rate (%)">
-              <input
-                type="number"
-                min="0"
-                step="any"
+              <select
                 value={productForm.gst ?? ""}
                 onChange={(e) =>
                   setProductForm({
@@ -2003,44 +2507,91 @@ export default function App() {
                     gst:
                       e.target.value === "" ? undefined : Number(e.target.value),
                   })
-                }
-              />
-              <small className="field-hint">
-                Default 18%. GST is included in the selling price and shown
-                separately on the invoice.
-              </small>
+                }>
+                {GST_RATES.map((rate) => (
+                  <option key={rate} value={rate}>
+                    {rate}%
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Opening stock">
               <input
-                type="number"
-                min="0"
-                step="any"
-                value={productForm.stock ?? ""}
+                type="text"
+                inputMode="decimal"
+                value={productNumbers.stock}
                 onChange={(e) =>
-                  setProductForm({
-                    ...productForm,
-                    stock:
-                      e.target.value === "" ? undefined : Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field label="Low-stock threshold">
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={productForm.minStock ?? ""}
-                onChange={(e) =>
-                  setProductForm({
-                    ...productForm,
-                    minStock:
-                      e.target.value === "" ? undefined : Number(e.target.value),
-                  })
+                  setProductNumbers({ ...productNumbers, stock: e.target.value })
                 }
               />
             </Field>
           </div>
+          <details className="product-advanced-fields">
+            <summary>More details <span>Unit, cost and stock threshold</span></summary>
+            <div className="form-grid two product-entry-form">
+              <Field label="Cost price (₹)">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={productNumbers.cost}
+                  onChange={(e) =>
+                    setProductNumbers({
+                      ...productNumbers,
+                      cost: e.target.value,
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Low-stock threshold">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={productNumbers.minStock}
+                  onChange={(e) =>
+                    setProductNumbers({
+                      ...productNumbers,
+                      minStock: e.target.value,
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Unit">
+                <select
+                  value={productForm.unit || ""}
+                  onChange={(e) =>
+                    setProductForm({ ...productForm, unit: e.target.value })
+                  }
+                >
+                  <option value="">Select unit</option>
+                  {PRODUCT_UNITS.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Minimum margin alert (%)">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={productForm.minMarginPct ?? ""}
+                  onChange={(e) =>
+                    setProductForm({
+                      ...productForm,
+                      minMarginPct: e.target.value === "" ? 0 : Number(e.target.value),
+                    })
+                  }
+                  placeholder="0 = alert only below cost"
+                />
+              </Field>
+            </div>
+          </details>
+          <p className="product-gst-note">
+            <AlertTriangle size={15} />
+            Sales tax is calculated using this product's selected GST rate.
+            Rates are applied per product, including on invoices with mixed
+            rates. Verify the applicable rate before billing.
+          </p>
           <div className="modal-actions">
             <button className="btn light" onClick={() => setShowProduct(false)}>
               Cancel
@@ -2101,12 +2652,26 @@ export default function App() {
               />
             </Field>
             <Field label="State">
-              <input
+              <select
                 value={customerForm.state || ""}
                 onChange={(e) =>
                   setCustomerForm({ ...customerForm, state: e.target.value })
-                }
-              />
+                }>
+                <option value="">Select state</option>
+                {customerForm.state &&
+                  !INDIAN_STATES.some(
+                    (state) => state === customerForm.state,
+                  ) && (
+                    <option value={customerForm.state}>
+                      {customerForm.state}
+                    </option>
+                  )}
+                {INDIAN_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
+                ))}
+              </select>
             </Field>
           </div>
           <div className="modal-actions">
@@ -2131,8 +2696,7 @@ export default function App() {
           <div className="form-grid">
             <Field label="Quantity to add / remove">
               <input
-                type="number"
-                step="any"
+                type="text"
                 value={adjustQty}
                 onChange={(e) => setAdjustQty(e.target.value)}
               />
@@ -2149,18 +2713,14 @@ export default function App() {
             <button
               className="btn primary"
               onClick={() => {
-                const n = Number(adjustQty);
-                if (!Number.isFinite(n) || n === 0) {
-                  notify("Enter a non-zero quantity.");
-                  return;
-                }
-                if (showAdjust.stock + n < 0) {
-                  notify("Stock cannot be negative.");
+                const result = adjustProductStock(showAdjust, Number(adjustQty));
+                if (!result.ok) {
+                  notifyError(result.message);
                   return;
                 }
                 setProducts((v) =>
                   v.map((p) =>
-                    p.id === showAdjust.id ? { ...p, stock: p.stock + n } : p,
+                    p.id === showAdjust.id ? result.product : p,
                   ),
                 );
                 setShowAdjust(null);
@@ -2168,6 +2728,50 @@ export default function App() {
               }}
             >
               <Save size={15} /> Apply adjustment
+            </button>
+          </div>
+        </Modal>
+      )}
+      {paymentSale && (
+        <Modal
+          title="Record payment"
+          subtitle={`${paymentSale.number} · ${paymentSale.customerName}`}
+          onClose={() => {
+            setPaymentSale(null);
+            setPaymentAmount("");
+          }}
+        >
+          <div className="payment-balance-note">
+            Outstanding balance:{" "}
+            <b>{fmt(getSaleBalance(paymentSale, returns).balance)}</b>
+          </div>
+          <div className="form-grid">
+            <Field label="Payment received (₹)">
+              <input
+                autoFocus
+                type="text"
+                inputMode="decimal"
+                value={paymentAmount}
+                onChange={(event) => setPaymentAmount(event.target.value)}
+                placeholder="Enter amount"
+              />
+            </Field>
+          </div>
+          <div className="modal-actions">
+            <button
+              className="btn light"
+              onClick={() => {
+                setPaymentSale(null);
+                setPaymentAmount("");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn primary"
+              onClick={() => recordPayment(paymentSale)}
+            >
+              <Wallet size={15} /> Save payment
             </button>
           </div>
         </Modal>
@@ -2192,12 +2796,45 @@ export default function App() {
             {viewSale.paid < viewSale.total && (
               <button
                 className="btn light"
-                onClick={() => recordPayment(viewSale)}
+                onClick={() => beginPayment(viewSale)}
               >
                 <Wallet size={15} /> Record payment
               </button>
             )}
             <button className="btn primary" onClick={() => printSale(viewSale)}>
+              <Printer size={15} /> Print / Save PDF
+            </button>
+          </div>
+        </Modal>
+      )}
+      {viewProforma && (
+        <Modal
+          title={viewProforma.number}
+          subtitle={`Proforma estimate · ${viewProforma.customerName}`}
+          onClose={() => setViewProforma(null)}
+          wide
+          printable
+        >
+          <InvoiceView
+            sale={viewProforma}
+            business={business}
+            proforma
+            validUntil={viewProforma.validUntil}
+            onPrint={() => printProforma(viewProforma)}
+          />
+          <div className="modal-actions">
+            {viewProforma.status === "Open" && (
+              <button
+                className="btn light"
+                onClick={() => convertProforma(viewProforma)}
+              >
+                <ShoppingCart size={15} /> Convert to sale
+              </button>
+            )}
+            <button
+              className="btn primary"
+              onClick={() => printProforma(viewProforma)}
+            >
               <Printer size={15} /> Print / Save PDF
             </button>
           </div>
@@ -2230,6 +2867,52 @@ export default function App() {
           <CheckCircle2 size={17} />
           {toast}
         </div>
+      )}
+      {errorPopup && (
+        <Modal
+          title="Something went wrong"
+          subtitle="Please review the details below and try again."
+          onClose={() => setErrorPopup("")}
+        >
+          <div className="error-popup-message" role="alert">
+            <AlertTriangle size={20} />
+            <p>{errorPopup}</p>
+          </div>
+          <div className="modal-actions">
+            <button
+              className="btn primary"
+              onClick={() => setErrorPopup("")}
+              autoFocus
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
+      )}
+      {marginWarnings.length > 0 && (
+        <Modal
+          title="Low margin warning"
+          subtitle="One or more items are below cost or their configured minimum margin."
+          onClose={() => setMarginWarnings([])}
+        >
+          <div className="margin-warning-list">
+            {marginWarnings.map((warning) => (
+              <p key={warning}><AlertTriangle size={15} />{warning}</p>
+            ))}
+          </div>
+          <div className="modal-actions">
+            <button className="btn light" onClick={() => setMarginWarnings([])}>Cancel sale</button>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setMarginWarnings([]);
+                saveSale(true);
+              }}
+            >
+              Continue sale
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

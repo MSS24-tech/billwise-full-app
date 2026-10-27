@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { fmt } from "../domain";
 import type { Customer, Product } from "../domain";
+import { INDIAN_STATES } from "../business/formOptions";
 import { Field } from "./Ui";
 
 export function SaleForm(props: any) {
@@ -20,6 +21,8 @@ export function SaleForm(props: any) {
     setSaleCustomer,
     saleDate,
     setSaleDate,
+    saleDue,
+    setSaleDue,
     saleSupply,
     salePlace,
     setSalePlace,
@@ -29,6 +32,9 @@ export function SaleForm(props: any) {
     setSalePaid,
     saleNotes,
     setSaleNotes,
+    isProforma = false,
+    validUntil = "",
+    setValidUntil,
     saleLines,
     setSaleLines,
     computed,
@@ -37,8 +43,13 @@ export function SaleForm(props: any) {
     onSave,
   } = props;
   const [manualProductId, setManualProductId] = useState("");
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>(
+    {},
+  );
   const selected = customers.find((c: Customer) => c.id === saleCustomer);
-  const availableProducts = products.filter((product: Product) => product.stock > 0);
+  const availableProducts = isProforma
+    ? products
+    : products.filter((product: Product) => product.stock > 0);
   const setLine = (idx: number, key: string, val: any) =>
     setSaleLines((v: any[]) =>
       v.map((l, i) => (i === idx ? { ...l, [key]: val } : l)),
@@ -52,7 +63,7 @@ export function SaleForm(props: any) {
               <h2>
                 <span className="num-badge">01</span> Customer & invoice
               </h2>
-              <p>Who is this sale for?</p>
+              <p>{isProforma ? "Prepare a price estimate for a customer." : "Who is this sale for?"}</p>
             </div>
           </div>
           <div className="form-grid two">
@@ -77,11 +88,35 @@ export function SaleForm(props: any) {
             </Field>
             <Field label="Invoice date">
               <input
-                type="date"
+                type="text"
+                inputMode="numeric"
                 value={saleDate}
+                placeholder="YYYY-MM-DD"
                 onChange={(e: any) => setSaleDate(e.target.value)}
               />
             </Field>
+            {!isProforma && (
+              <Field label="Payment due date">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={saleDue}
+                  placeholder="YYYY-MM-DD"
+                  onChange={(e: any) => setSaleDue(e.target.value)}
+                />
+              </Field>
+            )}
+            {isProforma && (
+              <Field label="Valid until">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={validUntil}
+                  placeholder="YYYY-MM-DD"
+                  onChange={(e: any) => setValidUntil(e.target.value)}
+                />
+              </Field>
+            )}
             <Field label="Customer GSTIN">
               <input
                 value={selected?.gstin || ""}
@@ -106,7 +141,11 @@ export function SaleForm(props: any) {
               <h2>
                 <span className="num-badge">02</span> Products & quantities
               </h2>
-              <p>Add products manually or scan a barcode.</p>
+              <p>
+                {isProforma
+                  ? "Add quoted items; stock is not reserved."
+                  : "Add products manually or scan a barcode."}
+              </p>
             </div>
             <button className="btn light tiny" onClick={onAddLine}>
               <Plus size={14} /> Add item
@@ -170,13 +209,21 @@ export function SaleForm(props: any) {
                     <Field label="Product">
                       <select
                         value={l.productId}
-                        onChange={(e: any) =>
-                          setLine(idx, "productId", e.target.value)
-                        }
+                        onChange={(e: any) => {
+                          const nextProductId = e.target.value;
+                          setQuantityDrafts((drafts) => {
+                            const nextDrafts = { ...drafts };
+                            delete nextDrafts[l.productId];
+                            delete nextDrafts[nextProductId];
+                            return nextDrafts;
+                          });
+                          setLine(idx, "productId", nextProductId);
+                        }}
                       >
                         {products
                           .filter(
-                            (x: Product) => x.stock > 0 || x.id === l.productId,
+                            (x: Product) =>
+                              isProforma || x.stock > 0 || x.id === l.productId,
                           )
                           .map((x: Product) => (
                             <option key={x.id} value={x.id}>
@@ -191,14 +238,24 @@ export function SaleForm(props: any) {
                   </div>
                   <Field label="Qty">
                     <input
-                      type="number"
-                      min="0.001"
-                      step="any"
+                      type="text"
+                      inputMode="decimal"
                       max={p?.stock || undefined}
-                      value={l.qty}
-                      onChange={(e: any) =>
-                        setLine(idx, "qty", Math.max(0, Number(e.target.value)))
-                      }
+                      value={quantityDrafts[l.productId] ?? String(l.qty)}
+                      onChange={(e: any) => {
+                        const rawValue = e.target.value;
+                        setQuantityDrafts((drafts) => ({
+                          ...drafts,
+                          [l.productId]: rawValue,
+                        }));
+                        if (rawValue === "") {
+                          setLine(idx, "qty", 0);
+                          return;
+                        }
+                        const quantity = Number(rawValue);
+                        if (Number.isFinite(quantity) && quantity >= 0)
+                          setLine(idx, "qty", quantity);
+                      }}
                     />
                   </Field>
                   <div className="sale-item-rate">
@@ -227,8 +284,10 @@ export function SaleForm(props: any) {
             )}
           </div>
           <div className="stock-hint">
-            <Warehouse size={14} /> Stock is checked before saving and reduced
-            automatically when the sale is completed.
+            <Warehouse size={14} />{" "}
+            {isProforma
+              ? "A proforma is an estimate only and does not reserve or reduce stock."
+              : "Stock is checked before saving and reduced automatically when the sale is completed."}
           </div>
         </section>
         <section className="panel">
@@ -237,40 +296,58 @@ export function SaleForm(props: any) {
               <h2>
                 <span className="num-badge">03</span> Tax & payment
               </h2>
-              <p>Set the supply type and amount received.</p>
+              <p>
+                {isProforma
+                  ? "Review tax and quote validity before sharing."
+                  : "Set the supply type and amount received."}
+              </p>
             </div>
           </div>
           <div className="form-grid two">
             <Field label="Supply type">
-              <input value={saleSupply} readOnly />
+              <select value={saleSupply} disabled>
+                <option value="Intra-state">Intra-state</option>
+                <option value="Inter-state">Inter-state</option>
+              </select>
             </Field>
             <Field label="Place of supply">
-              <input
+              <select
                 value={salePlace}
                 onChange={(e: any) => setSalePlace(e.target.value)}
-              />
+              >
+                <option value="">Select state</option>
+                {salePlace &&
+                  !INDIAN_STATES.some((state) => state === salePlace) && (
+                    <option value={salePlace}>{salePlace}</option>
+                  )}
+                {INDIAN_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Discount (%)">
               <input
-                type="number"
-                min="0"
-                max="100"
+                type="text"
+                inputMode="decimal"
                 value={saleDiscount}
                 onChange={(e: any) => setSaleDiscount(e.target.value)}
               />
             </Field>
-            <Field label="Payment received (₹)">
-              <input
-                type="number"
-                min="0"
-                value={salePaid}
-                onChange={(e: any) => setSalePaid(e.target.value)}
-              />
-            </Field>
+            {!isProforma && (
+              <Field label="Payment received (₹)">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={salePaid}
+                  onChange={(e: any) => setSalePaid(e.target.value)}
+                />
+              </Field>
+            )}
           </div>
           <Field label="Invoice notes / terms">
-            <textarea
-              rows={2}
+            <input
               value={saleNotes}
               onChange={(e: any) => setSaleNotes(e.target.value)}
             />
@@ -342,43 +419,50 @@ export function SaleForm(props: any) {
                 <span>Total payable</span>
                 <b>{fmt(computed.total)}</b>
               </div>
-              <div>
-                <span>Payment received</span>
-                <b>
-                  {fmt(
-                    Math.min(
-                      computed.total,
-                      Math.max(0, Number(salePaid) || 0),
-                    ),
-                  )}
-                </b>
-              </div>
-              <div className="balance">
-                <span>Balance due</span>
-                <b>
-                  {fmt(
-                    Math.max(
-                      0,
-                      computed.total - Math.max(0, Number(salePaid) || 0),
-                    ),
-                  )}
-                </b>
-              </div>
+              {!isProforma && (
+                <>
+                  <div>
+                    <span>Payment received</span>
+                    <b>
+                      {fmt(
+                        Math.min(
+                          computed.total,
+                          Math.max(0, Number(salePaid) || 0),
+                        ),
+                      )}
+                    </b>
+                  </div>
+                  <div className="balance">
+                    <span>Balance due</span>
+                    <b>
+                      {fmt(
+                        Math.max(
+                          0,
+                          computed.total - Math.max(0, Number(salePaid) || 0),
+                        ),
+                      )}
+                    </b>
+                  </div>
+                </>
+              )}
             </div>
             <button className="btn primary full" onClick={onSave}>
-              <CheckCircle2 size={16} /> Complete sale & create invoice
+              <CheckCircle2 size={16} />{" "}
+              {isProforma ? "Save proforma invoice" : "Complete sale & create invoice"}
             </button>
             <p className="summary-footnote">
-              <CheckCircle2 size={13} /> Stock will update after successful
-              save.
+              <CheckCircle2 size={13} />{" "}
+              {isProforma
+                ? "No stock changes until this proforma is converted to a sale."
+                : "Stock will update after successful save."}
             </p>
           </div>
           <div className="gst-note">
             <AlertTriangle size={15} />
             <p>
-              GST is calculated on the discounted, GST-exclusive selling price
-              using each product's configured rate. Confirm rates and tax
-              treatment before issuing.
+              GST is extracted from each product's GST-inclusive selling price
+              after discount, using that product's configured rate. Confirm
+              rates and tax treatment before issuing.
             </p>
           </div>
         </div>

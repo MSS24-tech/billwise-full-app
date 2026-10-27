@@ -10,19 +10,26 @@ A local-first retail billing and inventory management MVP built with React + Typ
 - Store product barcodes and scan them into a sale with USB/Bluetooth keyboard-wedge barcode readers (SKU scans are also supported)
 - Intra-state CGST/SGST split and inter-state IGST calculation (user-selected supply type)
 - Stock deduction when a sale is completed; stock is restored if an invoice is deleted
+- Supplier purchase entries that increase stock and update product cost
+- Purchase batches with optional lot codes and expiry dates, tracked by FEFO sales deduction and expiry alerts
+- Invoice-linked sales returns that restock items and reduce the invoice balance; refunds are limited to payments received
+- Expense tracking and a cashbook for sales payments, expenses, refunds and supplier payments, including estimated profit after expenses
+- Payment reminders with due dates, follow-up status and copyable customer messages
+- Supplier payments allocated to purchase entries with outstanding balance tracking
+- Per-product minimum margin thresholds with a confirmation warning before below-margin sales
+- Proforma estimates that do not reserve stock and can be converted into sales
 - Payment status and record-payment action
 - Inventory adjustments and low-stock alerts
 - Sales report with CSV export
 - Invoice printing / Save as PDF
-- LocalStorage persistence (no database/API; records stay in this browser on this device)
+- Local-only persistence in this browser on this device; no backend or network sync
 - Export/import JSON backup
 
 ## Run
 1. Install Node.js 20+.
 2. Extract the ZIP and open terminal in this folder.
 3. `npm install`
-4. `npm run dev`
-5. Open the local URL shown by Vite.
+4. Start the app with `npm run dev`, then open the local URL shown by Vite.
 
 ## Important
-This is a prototype/MVP and not a certified GST accounting product. Sample data is included for demonstration and can be cleared. Verify GSTIN, HSN/SAC, tax rates, place-of-supply rules, invoice numbering, e-invoicing/e-way bill applicability, and statutory requirements with a qualified professional before production use. Browser LocalStorage is not a secure multi-user database; use regular backups and do not rely on one browser/device as the only copy of business records.
+This is a prototype/MVP and not a certified GST accounting product. Sample data is included for demonstration and can be cleared. Verify GSTIN, HSN/SAC, tax rates, place-of-supply rules, invoice numbering, e-invoicing/e-way bill applicability, and statutory requirements with a qualified professional before production use. Data is saved only in the current browser on this device; export backups regularly.

@@ -1,16 +1,20 @@
 import { ReceiptText } from "lucide-react";
 import { calculateSaleTotals, dateLabel, fmt, roundMoney } from "../domain";
-import type { Business, Sale } from "../domain";
+import type { Business, Proforma, Sale } from "../domain";
 import { Status } from "./Ui";
 
 export function InvoiceView({
   sale,
   business,
   onPrint,
+  proforma = false,
+  validUntil,
 }: {
-  sale: Sale;
+  sale: Sale | Proforma;
   business: Business;
   onPrint: () => void;
+  proforma?: boolean;
+  validUntil?: string;
 }) {
   const intra = sale.supply === "Intra-state";
   const pricesIncludeGst = sale.pricesIncludeGst === true;
@@ -52,9 +56,10 @@ export function InvoiceView({
           </p>
         </div>
         <div className="invoice-number">
-          <span>TAX INVOICE</span>
+          <span>{proforma ? "PROFORMA INVOICE · NOT A TAX INVOICE" : "TAX INVOICE"}</span>
           <b>{sale.number}</b>
           <small>{dateLabel(sale.date)}</small>
+          {proforma && validUntil && <small>Valid until: {dateLabel(validUntil)}</small>}
         </div>
       </div>
       <hr />
@@ -66,8 +71,17 @@ export function InvoiceView({
           <p>Place of supply: {sale.place}</p>
         </div>
         <div>
-          <small>PAYMENT STATUS</small>
-          <Status status={sale.status} />
+          {proforma ? (
+            <>
+              <small>QUOTE STATUS</small>
+              <Status status={sale.status} />
+            </>
+          ) : (
+            <>
+              <small>PAYMENT STATUS</small>
+              <Status status={sale.status} />
+            </>
+          )}
         </div>
       </div>
       <table className="invoice-lines">
@@ -148,16 +162,26 @@ export function InvoiceView({
             <span>Total</span>
             <b>{fmt(sale.total)}</b>
           </div>
-          <div>
-            <span>Paid</span>
-            <b>{fmt(sale.paid)}</b>
-          </div>
-          <div>
-            <span>Balance due</span>
-            <b>{fmt(Math.max(0, sale.total - sale.paid))}</b>
-          </div>
+          {!proforma && (
+            <>
+              <div>
+                <span>Paid</span>
+                <b>{fmt(sale.paid)}</b>
+              </div>
+              <div>
+                <span>Balance due</span>
+                <b>{fmt(Math.max(0, sale.total - sale.paid))}</b>
+              </div>
+            </>
+          )}
         </div>
       </div>
+      {proforma && (
+        <p className="proforma-disclaimer">
+          This is a quotation only, not a tax invoice. Refer to Sales invoices
+          for the final tax invoice if this proforma was converted.
+        </p>
+      )}
       <div className="invoice-sign">
         <span>Computer-generated invoice preview</span>
         <div>
